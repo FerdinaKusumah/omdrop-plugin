@@ -37,6 +37,7 @@ class KeyutilsProbeTests(unittest.TestCase):
                      "#!/bin/sh\n"
                      f'case "$*" in *libkeyutils*) exit {0 if found else 1} ;; esac\n'
                      f'exec {REAL_PYTHON} "$@"\n')
+        self.env["OMDROP_RECEIVER_PYTHON"] = str(self.bin / "python3")
         self.command("omdrop-discoverable", helper({
             "backend": "owl", "version": "0.1.0", "hardware": True,
             "contract": "0.7.0", "missing": []}))
