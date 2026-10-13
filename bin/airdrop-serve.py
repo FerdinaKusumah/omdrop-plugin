@@ -72,7 +72,10 @@ def default_receiver_name():
 def load_config(path):
     """Read the TOML; unknown keys are an error (a typo must not silently fall
     back to a default), missing file is fine (defaults apply)."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python < 3.11: same API from the tomli package
+        import tomli as tomllib
     try:
         with open(path, 'rb') as f:
             cfg = tomllib.load(f)
