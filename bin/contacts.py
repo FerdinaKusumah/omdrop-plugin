@@ -186,6 +186,8 @@ def certificate_account(der, ca_file=None, untrusted=None):
             return ""
         subject = subprocess.run(["openssl", "x509", "-in", str(leaf), "-noout", "-subject"],
                                  capture_output=True).stdout.decode(errors="replace")
+    # OpenSSL 3.0 prints "CN = value"; newer releases print "CN=value".
+    subject = subject.replace(" = ", "=")
     if "CN=" not in subject:
         return ""
     cn = subject.split("CN=", 1)[1].strip()
