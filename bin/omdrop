@@ -810,6 +810,14 @@ for m in json.loads(os.environ["PROBE"]).get("missing") or []:
         print("%s\t%s" % ("backend-" + i if i in reserved else i, " ".join(str(m["say"]).split())))'
 }
 
+# vercmp ships with pacman. Elsewhere, sort -V orders x.y.z versions the same way.
+command -v vercmp >/dev/null 2>&1 || vercmp() {
+  if [[ "$1" == "$2" ]]; then echo 0
+  elif [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]; then echo -1
+  else echo 1
+  fi
+}
+
 # Whether the backend follows at least the plugin's minimum contract. One
 # that names none is taken to follow none.
 backend_contract_ok() {
