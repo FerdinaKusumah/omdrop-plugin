@@ -453,8 +453,8 @@ plugin_dir() {
 # in the keyring, and the receiver reads it through libkeyutils.
 RECEIVER_PKGS="python-libarchive-c keyutils"
 receiver_libs_installed() {
-  python3 -c 'from libarchive import stream_reader' >/dev/null 2>&1 \
-    && [[ -e /usr/lib/libkeyutils.so.1 ]]
+  # Load it the way identity.py does: the library directory differs by distro.
+  python3 -c 'import ctypes; from libarchive import stream_reader; ctypes.CDLL("libkeyutils.so.1")' >/dev/null 2>&1
 }
 
 # The identity this computer presents to Apple devices: its certificate and
