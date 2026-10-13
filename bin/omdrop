@@ -445,8 +445,7 @@ plugin_dir() {
 # in the keyring, and the receiver reads it through libkeyutils.
 RECEIVER_PKGS="python-libarchive-c keyutils"
 receiver_libs_installed() {
-  python3 -c 'from libarchive import stream_reader' >/dev/null 2>&1 \
-    && [[ -e /usr/lib/libkeyutils.so.1 ]]
+  python3 -c 'from libarchive import stream_reader; import ctypes; ctypes.CDLL("libkeyutils.so.1")' >/dev/null 2>&1
 }
 
 # The identity this computer presents to Apple devices: its certificate and
@@ -807,7 +806,12 @@ for m in json.loads(os.environ["PROBE"]).get("missing") or []:
 backend_contract_ok() {
   local contract
   contract=$(probe_field contract)
-  [[ -n "$contract" ]] && (( $(vercmp "$contract" "$BACKEND_CONTRACT_MIN") >= 0 ))
+  [[ -n "$contract" ]] || return 1
+  if command -v vercmp >/dev/null 2>&1; then
+    (( $(vercmp "$contract" "$BACKEND_CONTRACT_MIN") >= 0 ))
+  else
+    dpkg --compare-versions "$contract" ge "$BACKEND_CONTRACT_MIN"
+  fi
 }
 
 backend_contract_say() {
