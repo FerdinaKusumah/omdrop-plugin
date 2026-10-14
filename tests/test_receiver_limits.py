@@ -10,10 +10,14 @@ import subprocess
 import tempfile
 import threading
 import time
-import tomllib
 import types
 import unittest
 import unicodedata
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 import zlib
 from pathlib import Path
 

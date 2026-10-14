@@ -359,7 +359,11 @@ effective_limit() { local n; n=$(cfg_get max_receive_percent); printf '%s\n' "${
 
 cfg_get() {
   CONFIG="$CONFIG" python3 - "$1" <<'PY'
-import os, sys, tomllib
+import os, sys
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11: same API from the tomli package
+    import tomli as tomllib
 try:
     with open(os.environ['CONFIG'], 'rb') as f:
         print(tomllib.load(f).get(sys.argv[1], ''))
@@ -374,7 +378,11 @@ PY
 # a receiver starting mid-write never reads half a file.
 cfg_set() {
   CONFIG="$CONFIG" python3 - "$1" "$2" <<'PY'
-import os, sys, tomllib, tempfile
+import os, sys, tempfile
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11: same API from the tomli package
+    import tomli as tomllib
 path, key, val = os.environ['CONFIG'], sys.argv[1], sys.argv[2]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 try:
