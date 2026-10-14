@@ -445,7 +445,9 @@ plugin_dir() {
 # in the keyring, and the receiver reads it through libkeyutils.
 RECEIVER_PKGS="python-libarchive-c keyutils"
 receiver_libs_installed() {
-  python3 -c 'from libarchive import stream_reader; import ctypes; ctypes.CDLL("libkeyutils.so.1")' >/dev/null 2>&1
+  # The interpreter share/airdrop-receiver.service runs, not whichever python3
+  # PATH finds first (mise, pyenv, a venv), which may lack these packages.
+  "${OMDROP_RECEIVER_PYTHON:-/usr/bin/python3}" -c 'from libarchive import stream_reader; import ctypes; ctypes.CDLL("libkeyutils.so.1")' >/dev/null 2>&1
 }
 
 # The identity this computer presents to Apple devices: its certificate and

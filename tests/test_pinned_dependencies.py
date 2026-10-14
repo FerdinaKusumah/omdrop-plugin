@@ -50,6 +50,7 @@ class PinnedDependencyTests(unittest.TestCase):
         self.env = os.environ.copy()
         self.env.update(PATH=f"{self.bin}:{self.env['PATH']}",
                         OMDROP_DISCOVERABLE="/nonexistent",
+                        OMDROP_RECEIVER_PYTHON=str(self.bin / "python3"),
                         OMDROP_SYSFS=apple_wifi_sysfs(self.tmp.name))
 
     def command(self, name, body):
