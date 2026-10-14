@@ -2522,8 +2522,13 @@ cmd_skill() {
 # an image as the image itself, anything else as its path. wl-copy forks a
 # server to own the selection, so it has to survive us -- launch() gives it its
 # own unit, the same reason the viewer needed one.
+#
+# HEIC/HEIF/AVIF (what an iPhone sends since 0.16.0) is not a type anything
+# pastes, so it is decoded once to a JPEG and that goes on the clipboard (#62).
+# Any failure -- no heif-convert, a timeout, a nonzero exit, no output -- falls
+# back to copying the path, as before. The original is never touched.
 copy_to_clipboard() {
-  local f=$1 url; url=$(link_target "$f")
+  local f=$1 url tmp; url=$(link_target "$f")
   command -v wl-copy >/dev/null 2>&1 || return 0
   if [[ -n "$url" ]]; then
     printf '%s' "$url" | launch wl-copy
@@ -2534,8 +2539,43 @@ copy_to_clipboard() {
     *.jpg|*.jpeg) launch wl-copy --type image/jpeg < "$f" ;;
     *.gif)  launch wl-copy --type image/gif  < "$f" ;;
     *.webp) launch wl-copy --type image/webp < "$f" ;;
+    *.heic|*.heif|*.avif)
+      if tmp=$(heif_to_jpeg "$f"); then
+        # The redirect holds the JPEG open for wl-copy, so removing the
+        # directory afterwards is safe and leaves nothing behind.
+        launch wl-copy --type image/jpeg < "$tmp/clip.jpg"
+        rm -rf -- "$tmp"
+      else
+        printf '%s' "$f" | launch wl-copy
+      fi ;;
     *)      printf '%s' "$f" | launch wl-copy ;;
   esac
+}
+
+# Decode a HEIC/HEIF/AVIF into a private 0700 directory, unique to this
+# arrival, under the runtime dir; print the directory, which holds clip.jpg.
+# A directory rather than a file because heif-convert can write extra images
+# (aux, depth) beside its output, and the caller removes it whole. On failure
+# print nothing, leave nothing, return 1.
+#
+# The file came from whoever was nearby, so the decode is time-limited:
+# 10 s. A 48 MP iPhone photo decodes in a second or two even on modest
+# hardware, so this never cuts off a real photo, but it bounds a hostile file
+# built to stall the handler.
+HEIF_TIMEOUT=10
+heif_to_jpeg() {
+  local src=$1 base tmp
+  command -v heif-convert >/dev/null 2>&1 || return 1
+  base="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omdrop"
+  (umask 077 && mkdir -p -- "$base") || return 1
+  tmp=$(mktemp -d "$base/clip.XXXXXX") || return 1
+  if timeout -k 2 "$HEIF_TIMEOUT" heif-convert -q 90 "$src" "$tmp/clip.jpg" </dev/null >/dev/null 2>&1 \
+     && [[ -s "$tmp/clip.jpg" ]]; then
+    printf '%s' "$tmp"
+    return 0
+  fi
+  rm -rf -- "$tmp"
+  return 1
 }
 
 act_notify() {
