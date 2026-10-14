@@ -1,0 +1,26 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    # Omarchy is Arch: bin/omdrop needs pacman's vercmp, and the receiver needs
+    # python-libarchive-c.
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed git python openssl python-libarchive-c
+      - uses: actions/checkout@v7
+      - name: Run tests as a regular user
+        # identity.py refuses to create a self-signed identity as root.
+        run: |
+          useradd --create-home tester
+          chown -R tester .
+          su tester -c "python3 -m unittest discover -s tests -v"
