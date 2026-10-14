@@ -3,7 +3,7 @@
 Omdrop is two packages. This plugin is the panel, the `omdrop` command and the
 receiver (`airdrop-serve.py`, on `awdl0`, TCP 8771). The **radio backend** makes
 `awdl0` exist and makes this machine visible on it. The original backend is
-[omdrop-awdl](https://github.com/brentkearney/omdrop-awdl), for the Broadcom
+[omdrop-awdl](https://github.com/netmojo-systems/omdrop-awdl), for the Broadcom
 Wi-Fi in Apple Silicon Macs, whose firmware speaks AWDL.
 
 Another backend can drive a different radio. For example,

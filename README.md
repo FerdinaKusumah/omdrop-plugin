@@ -8,7 +8,7 @@ AirDrop for [Omarchy](https://omarchy.org), on Macs and PCs. Send and receive fi
 
 Omdrop needs a radio backend: the package that gives this computer an `awdl0` interface for AWDL, the Wi-Fi link AirDrop runs on. Install one of these:
 
-- **Apple Silicon Macs with Broadcom Wi-Fi (M1 and M2)**: [omdrop-awdl](https://github.com/brentkearney/omdrop-awdl), a `brcmfmac` driver that uses the AWDL built into the Wi-Fi firmware. The plugin installs it on first use. See its [Hardware Compatibility](https://github.com/brentkearney/omdrop-awdl/blob/main/README.md#hardware-compatibility).
+- **Apple Silicon Macs with Broadcom Wi-Fi (M1 and M2)**: [omdrop-awdl](https://github.com/netmojo-systems/omdrop-awdl), a `brcmfmac` driver that uses the AWDL built into the Wi-Fi firmware. The plugin installs it on first use. See its [Hardware Compatibility](https://github.com/netmojo-systems/omdrop-awdl/blob/main/README.md#hardware-compatibility).
 - **PCs with other Wi-Fi cards**: [omdrop-owl](https://github.com/t4t5/omdrop-owl), which runs AWDL in software through [OWL](https://github.com/seemoo-lab/owl). Install it before the plugin. Its [Supported hardware](https://github.com/t4t5/omdrop-owl#supported-hardware) table lists the cards that work; on some, Wi-Fi is off while Omdrop is visible.
 
 The two packages conflict, so a computer has one or the other. [docs/radio-backend.md](docs/radio-backend.md) describes what a backend provides.
@@ -18,7 +18,7 @@ The two packages conflict, so a computer has one or the other. [docs/radio-backe
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/brentkearney/omdrop-plugin.git
+omarchy plugin add https://github.com/netmojo-systems/omdrop-plugin.git
 ```
 
 Answer yes when it asks to enable the plugin. The icon, a triangle dropping into a box, appears on the right of the bar. To move it, run `omarchy bar move netmojo.omdrop --section center`.
@@ -206,7 +206,7 @@ rm -rf ~/.omdrop                    # this computer's AirDrop identity
 
 ## Contributing
 
-To report a bug or request a feature, [open an issue](https://github.com/brentkearney/omdrop-plugin/issues). [Pull requests](https://github.com/brentkearney/omdrop-plugin/pulls) are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) lists the setup details, hardware evidence, and tests a pull request needs.
+To report a bug or request a feature, [open an issue](https://github.com/netmojo-systems/omdrop-plugin/issues). [Pull requests](https://github.com/netmojo-systems/omdrop-plugin/pulls) are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) lists the setup details, hardware evidence, and tests a pull request needs.
 
 ## Trademark
 
