@@ -1,6 +1,6 @@
 # Identity contract
 
-This file is kept byte-identical in `brentkearney/omdrop-awdl` and `brentkearney/omdrop-plugin`. It defines how every Omdrop program chooses the AirDrop identity it presents, so that the driver's programs (sender, `send-to-peer`, Bluetooth advertiser) and the plugin's (receiver, `omdrop`) always agree. `tests/identity-vectors.json`, also byte-identical in both, holds the cases each implementation must pass.
+This file is kept byte-identical in `netmojo-systems/omdrop-awdl` and `netmojo-systems/omdrop-plugin`. It defines how every Omdrop program chooses the AirDrop identity it presents, so that the driver's programs (sender, `send-to-peer`, Bluetooth advertiser) and the plugin's (receiver, `omdrop`) always agree. `tests/identity-vectors.json`, also byte-identical in both, holds the cases each implementation must pass.
 
 ## Identities
 

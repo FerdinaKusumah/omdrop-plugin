@@ -5,7 +5,7 @@
   "version": "0.16.1",
   "author": "Brent Kearney",
   "license": "MIT",
-  "description": "Send and receive files with nearby Apple devices over AirDrop, on Macs and PCs running Omarchy. Marketplace review lags releases; to install the latest version straight from GitHub, run: omarchy plugin add https://github.com/brentkearney/omdrop-plugin.git",
+  "description": "Send and receive files with nearby Apple devices over AirDrop, on Macs and PCs running Omarchy. Marketplace review lags releases; to install the latest version straight from GitHub, run: omarchy plugin add https://github.com/netmojo-systems/omdrop-plugin.git",
   "kinds": [
     "bar-widget"
   ],

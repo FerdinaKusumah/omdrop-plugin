@@ -70,4 +70,4 @@ Logs and dumps can identify people. Before posting:
 
 ## Reporting a bug
 
-[Open an issue](https://github.com/brentkearney/omdrop-plugin/issues) with the problem, your setup, and the evidence described above.
+[Open an issue](https://github.com/netmojo-systems/omdrop-plugin/issues) with the problem, your setup, and the evidence described above.

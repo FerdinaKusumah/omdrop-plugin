@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VECTORS = ROOT / 'tests' / 'identity-vectors.json'
-# The same file, byte for byte, in brentkearney/omdrop-awdl. A change here is a
+# The same file, byte for byte, in netmojo-systems/omdrop-awdl. A change here is a
 # contract change: update it in both repositories and both pins together.
 VECTORS_SHA256 = '7c4df91563d32240ad1dc17c18415cde012b373b9a4afc23f0387f384daed1b9'
 
