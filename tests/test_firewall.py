@@ -109,6 +109,7 @@ for arg do printf '<%s>\\n' "$arg" >> "$CAPTURE"; done
 
     def test_dependency_installer_runs_firewall_setup_in_the_same_terminal(self):
         self.command("python3", "#!/bin/sh\nexit 1\n")
+        self.env["OMDROP_RECEIVER_PYTHON"] = str(self.bin / "python3")
         self.command(
             "omarchy-launch-floating-terminal-with-presentation",
             """#!/bin/sh
