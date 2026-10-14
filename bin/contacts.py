@@ -184,11 +184,18 @@ def certificate_account(der, ca_file=None, untrusted=None):
         verified = subprocess.run([*args, str(leaf)], capture_output=True)
         if verified.returncode != 0:
             return ""
-        subject = subprocess.run(["openssl", "x509", "-in", str(leaf), "-noout", "-subject"],
+        # One attribute per line, "commonName = value". The default one-line
+        # subject is "CN = value" on OpenSSL 3.0 (Debian 12, Ubuntu 22.04 and
+        # 24.04) and "CN=value" on later releases, so searching it for "CN="
+        # refused every Apple certificate on 3.0.
+        subject = subprocess.run(["openssl", "x509", "-in", str(leaf), "-noout", "-subject",
+                                  "-nameopt", "multiline"],
                                  capture_output=True).stdout.decode(errors="replace")
-    if "CN=" not in subject:
-        return ""
-    cn = subject.split("CN=", 1)[1].strip()
+    cn = ""
+    for line in subject.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "commonName":
+            cn = value.strip()
     return cn[len(CN_PREFIX):] if cn.startswith(CN_PREFIX) else ""
 
 
