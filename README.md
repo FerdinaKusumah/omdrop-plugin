@@ -13,6 +13,8 @@ Omdrop needs a radio backend: the package that gives this computer an `awdl0` in
 
 The two packages conflict, so a computer has one or the other. [docs/radio-backend.md](docs/radio-backend.md) describes what a backend provides.
 
+The Python CLI and receiver use `tomllib`, built into Python 3.11+, to read TOML configuration. On Python 3.10, install `tomli` (`sudo apt install python3-tomli` on Debian/Ubuntu). It must be available to the system `python3` used by the CLI and receiver service, not just a development virtual environment. This supplies the configuration parser; it does not establish full support for other distributions.
+
 [LocalSend](https://localsend.org), which ships with Omarchy, is an open alternative that needs its app on every device.
 
 ## Install
@@ -25,7 +27,7 @@ Answer yes when it asks to enable the plugin. The icon, a triangle dropping into
 
 On first use, the panel opens a terminal that asks for your password to:
 
-- Install `python-libarchive-c` from the official Arch repositories if it is missing. It is the receiver's only library outside Python's standard library. On a Mac, the same step builds and installs the driver, pinned to an exact commit.
+- Install `python-libarchive-c` from the official Arch repositories if it is missing. On Arch's Python 3.11+, it is the receiver's only Python library outside the standard library. On a Mac, the same step builds and installs the driver, pinned to an exact commit.
 - Add one firewall rule: TCP 8771 on `awdl0`, from IPv6 link-local addresses only.
 
 The first time you turn Omdrop on, it finishes setting up and installs the `omdrop` command at `~/.local/bin/omdrop`. To get the command before that, run `~/.config/omarchy/plugins/netmojo.omdrop/bin/omdrop setup`. Run `omdrop --version` to include the version in bug reports.
