@@ -193,6 +193,26 @@ class ExistingIdentityTests(ReceiverFixture):
         self.assertEqual(status, 200)
         self.assertEqual((self.out / "hello.txt").read_bytes(), b"hello world\n")
 
+    def test_a_complete_upload_answers_then_closes_immediately(self):
+        body = dvzip([("complete.txt", b"completed upload\n")])
+        raw = socket.create_connection(("::1", self.port), timeout=5)
+        tls = self.context().wrap_socket(raw)
+        self.addCleanup(tls.close)
+        tls.sendall(b"POST /Upload HTTP/1.1\r\nHost: x\r\n"
+                    b"Content-Type: application/x-dvzip\r\n"
+                    b"TransferID: T-complete\r\nTransfer-Encoding: chunked\r\n\r\n"
+                    + b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body))
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = tls.recv(4096)
+            self.assertTrue(chunk, "connection closed before the response headers")
+            response += chunk
+        self.assertTrue(response.startswith(b"HTTP/1.1 200 "))
+        self.assertIn(b"Connection: close\r\n", response)
+        tls.settimeout(2)
+        self.assertEqual(tls.recv(4096), b"")
+        self.assertEqual((self.out / "complete.txt").read_bytes(), b"completed upload\n")
+
     def upload_without_closing_chunk(self, tid, name, payload):
         """Send a whole /Upload but not its final 0-chunk; return the socket
         once the receiver has answered, and the status it answered."""
@@ -203,7 +223,13 @@ class ExistingIdentityTests(ReceiverFixture):
         tls.sendall(b"POST /Upload HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-dvzip\r\n"
                     b"TransferID: %s\r\nTransfer-Encoding: chunked\r\n\r\n" % tid.encode()
                     + b"%x\r\n%s\r\n" % (len(body), body))
-        return tls, tls.recv(64).split(b" ", 2)[1]
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = tls.recv(4096)
+            self.assertTrue(chunk, "connection closed before the response headers")
+            response += chunk
+        self.assertIn(b"Connection: close\r\n", response)
+        return tls, response.split(b" ", 2)[1]
 
     def test_a_closing_chunk_sent_after_an_early_answer_gets_a_clean_close(self):
         # A Mac's sharingd sends the final 0-chunk only once it has the
@@ -310,6 +336,8 @@ class UploadWaitTests(ReceiverFixture):
     def closed_by_receiver(self, conn):
         # Read, never write: a failed TLS write here made the client's next
         # read on another connection fail too.
+        if conn.sock is None:  # HTTPConnection closed after Connection: close.
+            return True
         conn.sock.settimeout(2)
         try:
             return conn.sock.recv(1) == b""
@@ -336,9 +364,8 @@ class UploadWaitTests(ReceiverFixture):
 
         time.sleep(idle + 3)
 
-        # A links Ask has no Upload to wait for, and a finished Upload puts the
-        # connection back on the idle limit. So does a request that started
-        # and then stopped partway through its first line.
+        # A links Ask uses the idle limit; a finished Upload closes immediately.
+        # A request that stops partway through its first line also times out.
         self.assertTrue(self.closed_by_receiver(link))
         self.assertTrue(self.closed_by_receiver(finished))
         self.assertTrue(self.closed_by_receiver(stalled))
