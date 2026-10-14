@@ -18,6 +18,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
 import contacts  # noqa: E402
@@ -157,6 +158,28 @@ class ContactsPolicyTests(unittest.TestCase):
         impostor = self.fx.certificate(self.OTHER)
         known = {contacts.hash_identifier("friend@example.com")}
         self.assertEqual(contacts.REJECT_UNBOUND, self.decide(record, impostor, known))
+
+    def test_account_is_read_whatever_subject_format_openssl_prints(self):
+        """OpenSSL 3.0 (Debian 12, Ubuntu 22.04 and 24.04) prints a one-line
+        subject as "O = Apple Inc., CN = value"; later releases print
+        "CN=value". Reading the account by searching for "CN=" refused every
+        Apple-issued certificate on 3.0, as "the validation record does not
+        belong to the presented certificate". Any `openssl x509 -subject`
+        here that names no format gets 3.0's (-nameopt oneline), so this
+        holds whichever OpenSSL the machine has.
+        """
+        real_run = subprocess.run
+
+        def as_openssl_3_0(args, *a, **kw):
+            args = list(args)
+            if args[:2] == ["openssl", "x509"] and "-subject" in args and "-nameopt" not in args:
+                args += ["-nameopt", "oneline"]
+            return real_run(args, *a, **kw)
+
+        cert = self.fx.certificate(self.ACCOUNT)
+        with mock.patch.object(contacts.subprocess, "run", as_openssl_3_0):
+            account = contacts.certificate_account(cert, self.ca, self.mid)
+        self.assertEqual(self.ACCOUNT, account)
 
     def test_self_signed_certificate_cannot_carry_an_account(self):
         """Everyone-mode peers present an ephemeral self-signed certificate."""
