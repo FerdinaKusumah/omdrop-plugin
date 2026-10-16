@@ -324,9 +324,9 @@ pub fn radio_update() -> String {
     format!("Update the package that provides it{named}: omdrop install-driver leaves it alone.")
 }
 
-/// The installed driver package's version, from pacman.
-fn installed_driver() -> Option<String> {
-    let (code, out) = capture("pacman", &["-Q", DRIVER_PKG]);
+/// An installed package's version, from pacman.
+fn installed_pkg(name: &str) -> Option<String> {
+    let (code, out) = capture("pacman", &["-Q", name]);
     if code != 0 {
         return None;
     }
@@ -342,9 +342,70 @@ fn vercmp(a: &str, b: &str) -> Option<i64> {
 /// Whether the installed driver is at least the one this release pins.
 /// Read from pacman, because a helper fix is invisible from outside it.
 pub fn driver_current() -> bool {
-    installed_driver()
+    installed_pkg(DRIVER_PKG)
         .and_then(|v| vercmp(&v, DRIVER_VERSION))
         .is_some_and(|c| c >= 0)
+}
+
+const CORE_PKG: &str = "omdrop-core";
+
+/// The omdrop-core the plugin carries, as core/PKGBUILD's pkgver-pkgrel:
+/// core/ bumps one of them whenever it changes in a release, so an older
+/// installed package is one built from an older plugin.
+fn core_wanted(plugin: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(plugin.join("core/PKGBUILD")).ok()?;
+    let field = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key))
+            .filter(|v| !v.is_empty())
+    };
+    Some(format!("{}-{}", field("pkgver=")?, field("pkgrel=")?))
+}
+
+/// Where `omdrop install-core` installs: Apple's Broadcom Wi-Fi, with
+/// omdrop-awdl's helper or its hooks, until core has run on other backends.
+fn core_supported() -> bool {
+    match radio_probe() {
+        Probe::None => apple_broadcom_wifi(),
+        _ => probe_field("backend") == "awdl",
+    }
+}
+
+/// Optional updates, never blockers: an installed omdrop-core older than
+/// the one the plugin carries. The plugin's bash offers the first install.
+pub fn core_offers() -> Vec<(String, String)> {
+    let Some(want) = ctx().plugin_dir().and_then(core_wanted) else {
+        return Vec::new();
+    };
+    let Some(have) = installed_pkg(CORE_PKG) else {
+        return Vec::new();
+    };
+    if vercmp(&have, &want).is_some_and(|c| c < 0) && core_supported() {
+        return vec![(
+            "core".to_string(),
+            format!(
+                "omdrop-core {have} is older than the {want} this plugin carries. Update it with: omdrop install-core"
+            ),
+        )];
+    }
+    Vec::new()
+}
+
+/// Installing core is the plugin's job, done before core exists, so there
+/// is one installer: the plugin's own, run as the Python version.
+pub fn cmd_install_core() -> i32 {
+    use std::os::unix::process::CommandExt;
+    let Some(plugin) = ctx().plugin_dir() else {
+        die(
+            "omdrop install-core builds omdrop-core from the Omdrop plugin, and no plugin was found.",
+        );
+    };
+    let script = plugin.join("bin/omdrop");
+    let err = Command::new(&script)
+        .arg("install-core")
+        .env("OMDROP_IMPLEMENTATION", "python")
+        .exec();
+    die(format!("could not run {}: {err}", script.display()))
 }
 
 /// Moving the Apple identity off disk needs a driver whose sender follows the
@@ -370,7 +431,7 @@ pub fn driver_identity_ready() {
         }
         Probe::None => {}
     }
-    let installed = installed_driver().unwrap_or_default();
+    let installed = installed_pkg(DRIVER_PKG).unwrap_or_default();
     let too_old =
         installed.is_empty() || vercmp(&installed, DRIVER_IDENTITY_VERSION).is_some_and(|c| c < 0);
     if too_old {
@@ -470,23 +531,28 @@ struct Missing<'a> {
     say: &'a str,
 }
 
+fn rows(v: &[(String, String)]) -> Vec<Missing<'_>> {
+    v.iter().map(|(id, say)| Missing { id, say }).collect()
+}
+
 #[derive(Serialize)]
 struct Doctor<'a> {
     ready: bool,
     missing: Vec<Missing<'a>>,
+    offers: Vec<Missing<'a>>,
 }
 
 /// The panel's version of `setup`'s answer: --json so the widget can render
 /// the first blocking sentence and know whether it can offer the fix.
+/// `offers` are optional and never make it unready.
 pub fn cmd_doctor(args: &[String]) -> i32 {
     let missing = prereqs_missing();
+    let offers = core_offers();
     if args.first().is_some_and(|a| a == "--json") {
         let d = Doctor {
             ready: missing.is_empty(),
-            missing: missing
-                .iter()
-                .map(|(id, say)| Missing { id, say })
-                .collect(),
+            missing: rows(&missing),
+            offers: rows(&offers),
         };
         outln!("{}", py_json(&d));
         return 0;
@@ -496,6 +562,12 @@ pub fn cmd_doctor(args: &[String]) -> i32 {
     } else {
         outln!("Not ready to receive yet:");
         for (_, say) in &missing {
+            outln!("  - {say}");
+        }
+    }
+    if !offers.is_empty() {
+        outln!("\nOptional:");
+        for (_, say) in &offers {
             outln!("  - {say}");
         }
     }

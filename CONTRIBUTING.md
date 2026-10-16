@@ -48,7 +48,7 @@ If the change affects how Omdrop talks to an Apple device, show the behaviour be
 
 ### omdrop-core
 
-`core/` holds omdrop-core, the same programs in Rust, as one Cargo workspace. It builds and installs as its own package (`makepkg -si` in `core/`); nothing in it runs from the plugin's clone. Its tests run as an ordinary user, never root:
+`core/` holds omdrop-core, the same programs in Rust, as one Cargo workspace. It builds and installs as its own package; nothing in it runs from the plugin's clone. Users install it with `omdrop install-core`, which builds this `core/` with makepkg when no repository carries its version. Its tests run as an ordinary user, never root:
 
 ```bash
 cd core
@@ -59,7 +59,9 @@ cargo fmt --check
 
 `core/README.md` covers the programs and how they find each other, and `core/docs/backend-contract.md` the hooks a radio backend provides.
 
-New development goes into `core/` only. The bash and Python programs remain as the fallback for installs without omdrop-core, are not developed further, and will be removed at 1.0.0, so a pull request that changes them will usually be asked to make the change in Rust instead. Security fixes are the exception: patches for the bash and Python programs are welcome, because installs without omdrop-core still run them.
+`core/PKGBUILD`'s `pkgver` and `pkgrel` are how `omdrop install-core` and `omdrop doctor` tell whether an installed core matches the plugin. Bump one of them in any release that changes `core/`, or users keep the older core.
+
+New development goes into `core/` only. The bash and Python programs remain as the fallback for installs without omdrop-core, are not developed further, and will be removed at 1.0.0, so a pull request that changes them will usually be asked to make the change in Rust instead. There are two exceptions. Security fixes for the bash and Python programs are welcome, because installs without omdrop-core still run them. Installing omdrop-core (`omdrop install-core`, and `doctor` offering it) lives in `bin/omdrop`, because it has to run before core exists; core's own `install-core` runs that one.
 
 ### Receiver changes
 

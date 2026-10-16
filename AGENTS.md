@@ -19,11 +19,12 @@ Epic #73 tracks the migration. Rust becomes the only implementation in 1.0.0, on
 
 ## Rules during the migration
 
-- **Change the Rust version only.** The bash and Python programs remain as the fallback for installs without omdrop-core and are not developed further; don't add features to them or port changes back. The one exception is a security fix, which is accepted for the Python too, since installs without core still run it. They are removed at 1.0.0.
+- **Change the Rust version only.** The bash and Python programs remain as the fallback for installs without omdrop-core and are not developed further; don't add features to them or port changes back. There are two exceptions. A security fix is accepted for the Python too, since installs without core still run it. Installing core (`omdrop install-core`, and `doctor` offering it) lives in `bin/omdrop`, because it runs before core exists; core's `install-core` runs that one. The bash and Python programs are removed at 1.0.0.
 - **Keep the Rust programs drop-in.** Each replaces a current program with the same arguments, output, files and exit codes, because the panel and existing installs depend on them.
 - **Test in `core/`:** `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`. Run them as an ordinary user, never as root. If you touch the plugin side (`bin/omdrop`'s hand-off, the QML), also run the Python suite from the repository root: `python3 -m unittest discover -s tests`.
 - **Know which stack you are running.** When omdrop-core is installed at `/usr/bin/omdrop`, `bin/omdrop` hands every command to it, including the command-line tests. `OMDROP_IMPLEMENTATION=python` keeps the bash and Python programs; `rust` requires core.
-- **Never run core from this checkout as root, and never point a polkit action or a systemd unit at it.** Core is built and installed as its own package (`makepkg -si` in `core/`). Its root helper must sit at a fixed, root-owned path, or any user could gain root through it.
+- **Never run core from this checkout as root, and never point a polkit action or a systemd unit at it.** Core is built and installed as its own package (`omdrop install-core`, or `makepkg -si` in `core/`). Its root helper must sit at a fixed, root-owned path, or any user could gain root through it.
+- **Bump `core/PKGBUILD`'s `pkgver` or `pkgrel` in any release that changes `core/`.** It is how `install-core` and `doctor` tell an installed core is older than the plugin's.
 - **Radio backends talk to core through hooks**, described in `core/docs/backend-contract.md`. Hooks ship with the backend (omdrop-awdl, omdrop-owl), not with core. A change to the contract affects every backend, so propose it in an issue first.
 
 ## Safety

@@ -235,6 +235,8 @@ omdrop -- send and receive files with nearby Apple devices
                     opens received links on double-click. Safe to run again.
   doctor [--json]   what is still missing before this can receive
   install-driver    build and install the Wi-Fi driver, in a terminal you watch
+  install-core      install omdrop-core, the Rust version of Omdrop, built from
+                    this plugin, in a terminal you watch
   firewall ACTION   install or remove Omdrop's narrow UFW receiver rule
   links ACTION      install or remove the double-click handler for received
                     .url and .webloc links
@@ -720,14 +722,19 @@ setup_install() {
 cmd_setup() {
   setup_install || echo "Everything omdrop sets up for you was already in place."
 
-  local missing=()
+  local missing=() offers=()
   readarray -t missing < <(prereqs_missing)
+  readarray -t offers < <(core_offers)
 
   if (( ${#missing[@]} )); then
     printf '\nNot ready to receive yet:\n'
     printf -- '  - %s\n' "${missing[@]}"
   else
     printf '\nReady. Turn receiving on from the bar, or run: omdrop on\n'
+  fi
+  if (( ${#offers[@]} )); then
+    printf '\nOptional:\n'
+    printf -- '  - %s\n' "${offers[@]#*$'\t'}"
   fi
   skills_offer
 }
@@ -902,16 +909,21 @@ prereqs_missing() {
 
 # `doctor` is the panel's version of the same answer. --json so the widget can
 # render the first blocking sentence instead of a generic refusal, and know
-# whether the thing in the way is one it can offer to install.
+# whether the thing in the way is one it can offer to install. `offers` are
+# optional and never make it unready.
 cmd_doctor() {
-  local missing=()
+  local missing=() offers=()
   readarray -t missing < <(prereqs_missing)
+  readarray -t offers < <(core_offers)
   if [[ "${1:-}" == --json ]]; then
-    MISSING=$(printf '%s\n' "${missing[@]}") python3 -c '
+    MISSING=$(printf '%s\n' "${missing[@]}") OFFERS=$(printf '%s\n' "${offers[@]}") python3 -c '
 import json, os
-rows = [l.split("\t", 1) for l in os.environ["MISSING"].split("\n") if l.strip()]
-print(json.dumps({"ready": not rows,
-                  "missing": [{"id": r[0], "say": r[1]} for r in rows]}))'
+def rows(name):
+    return [l.split("\t", 1) for l in os.environ[name].split("\n") if l.strip()]
+missing = rows("MISSING")
+print(json.dumps({"ready": not missing,
+                  "missing": [{"id": r[0], "say": r[1]} for r in missing],
+                  "offers": [{"id": r[0], "say": r[1]} for r in rows("OFFERS")]}))'
     return 0
   fi
   if (( ${#missing[@]} )); then
@@ -919,6 +931,10 @@ print(json.dumps({"ready": not rows,
     printf -- '  - %s\n' "${missing[@]#*$'\t'}"
   else
     printf 'Ready to receive.\n'
+  fi
+  if (( ${#offers[@]} )); then
+    printf '\nOptional:\n'
+    printf -- '  - %s\n' "${offers[@]#*$'\t'}"
   fi
   # Which identity Apple devices will see, and anything left behind. Reported,
   # never repaired here: `omdrop off` is the one thing that clears a window.
@@ -1130,6 +1146,97 @@ launch_install() {
   local script="( $build
 ); rc=\$?; if [ \$rc -ne 0 ]; then echo; echo \"Installing failed (exit \$rc). The messages above say why.\"; read -rsn 1 -p 'Press any key to close...' </dev/tty; echo; exit 130; fi"
   omarchy-launch-floating-terminal-with-presentation "echo '$intro'; echo; $script"
+}
+
+# omdrop-core is built from this plugin's own core/, so the core a user runs
+# is the one reviewed with the plugin. Its package version, from core/PKGBUILD,
+# is how an installed core is judged current: core/ bumps pkgver or pkgrel
+# whenever it changes in a release (CONTRIBUTING.md), as DRIVER_VERSION does.
+CORE_PKG=omdrop-core
+core_wanted() {
+  local f="$PROJ/core/PKGBUILD" ver rel
+  [[ -r "$f" ]] || return 1
+  ver=$(sed -n 's/^pkgver=//p' "$f")
+  rel=$(sed -n 's/^pkgrel=//p' "$f")
+  [[ -n "$ver" && -n "$rel" ]] || return 1
+  printf '%s-%s' "$ver" "$rel"
+}
+
+# Offered where it has been tested live: Apple's Broadcom Wi-Fi, with
+# omdrop-awdl's helper or its hooks. Other backends follow once core has run
+# on them (issue #73).
+core_supported() {
+  if radio_probe; then
+    [[ "$(probe_field backend)" == awdl ]]
+  else
+    apple_broadcom_wifi
+  fi
+}
+
+# Optional, never a blocker: the Python version receives as well. Not offered
+# to someone who chose the Python version by name. This script runs only while
+# core is not installed, or when OMDROP_IMPLEMENTATION=python; an installed
+# core reports its own updates.
+core_offers() {
+  [[ "${OMDROP_IMPLEMENTATION:-}" == python ]] && return 0
+  core_wanted >/dev/null && core_supported || return 0
+  pacman -Q "$CORE_PKG" >/dev/null 2>&1 && return 0
+  printf 'core\t%s\n' "omdrop-core, the Rust version of Omdrop, is not installed. It is optional; install it with: omdrop install-core"
+}
+
+# Installed from a repository that carries this version or newer, and otherwise
+# built from this plugin's core/ with makepkg, in the same visible terminal as
+# install-driver. The build tree and package go to the cache, not the plugin's
+# clone. Its tests ran in CI on the same tree, and need tools a user may not
+# have, so the build skips them.
+cmd_install_core() {
+  local want have repo build cache core_q cache_q
+  want=$(core_wanted) \
+    || die "This copy of the plugin has no core/ to build omdrop-core from."
+  if radio_probe; then
+    radio_probe_hung && die "$(radio_probe_hung_say)"
+    [[ "$(probe_field backend)" == awdl ]] \
+      || die "omdrop-core has not been tested with the $(probe_field backend) radio backend yet. Until it has, it is installed only on Apple Broadcom Wi-Fi."
+  else
+    apple_broadcom_wifi \
+      || die "This computer has no Apple Broadcom Wi-Fi. omdrop-core has been tested only there so far, so it is not installed here."
+  fi
+  if have=$(pacman -Q "$CORE_PKG" 2>/dev/null); then
+    have=${have##* }
+    if (( $(vercmp "$have" "$want") >= 0 )); then
+      echo "omdrop-core $have is installed and current. Nothing to do."
+      return 0
+    fi
+  fi
+  # The programs change under a running window; the new ones start cleanly.
+  receiving && die "Omdrop is receiving. Turn it off first (omdrop off), then run omdrop install-core again."
+
+  repo=$(pacman -Si "$CORE_PKG" 2>/dev/null | sed -n 's/^Version *: *//p' | head -n 1)
+  if [[ -n "$repo" ]] && (( $(vercmp "$repo" "$want") >= 0 )); then
+    build="set -e
+sudo pacman -S --needed $CORE_PKG"
+  else
+    cache="${XDG_CACHE_HOME:-$HOME/.cache}/omdrop/omdrop-core"
+    printf -v core_q '%q' "$PROJ/core"
+    printf -v cache_q '%q' "$cache"
+    build="set -e
+mkdir -p $cache_q
+echo 'Building omdrop-core $want from this plugin.'
+BUILDDIR=$cache_q/build PKGDEST=$cache_q makepkg --dir $core_q --syncdeps --install --needed --force --nocheck"
+  fi
+  build="$build
+echo
+echo 'omdrop-core is installed, and omdrop now runs it. OMDROP_IMPLEMENTATION=python runs the Python version instead.'"
+  local intro="omdrop-core is installed as a system package, which requires administrative privilege. You will be prompted for your password."
+  if ! command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then
+    echo "$intro"
+    echo
+    echo "Install omdrop-core with:"
+    printf '\n%s\n\n' "$build"
+    return 0
+  fi
+  echo "Opening a terminal to install omdrop-core."
+  launch_install "$build" "$intro"
 }
 
 cmd_on() {
@@ -2885,6 +2992,7 @@ case "${1:-status}" in
   skill|skills) shift; cmd_skill "$@" ;;
   open-link) shift; cmd_open_link "$@" ;;
   install-driver) shift; cmd_install_driver ;;
+  install-core) shift; cmd_install_core ;;
   firewall) shift; cmd_firewall "$@" ;;
   act)    shift; cmd_act "$@" ;;
   watch)  shift; cmd_watch "$@" ;;
