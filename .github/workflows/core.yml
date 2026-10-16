@@ -14,7 +14,8 @@ jobs:
   core:
     runs-on: ubuntu-latest
     # Omarchy is Arch. The tests need openssl (validation records, the
-    # self-signed pair) and dbus-daemon (the BlueZ and portal mocks).
+    # self-signed pair), dbus-daemon (the BlueZ and portal mocks) and python
+    # (the command's tests of the OMDROP_IMPLEMENTATION=python fallback).
     container: archlinux:latest
     defaults:
       run:
@@ -22,7 +23,7 @@ jobs:
     steps:
       - name: Install dependencies
         working-directory: /
-        run: pacman -Syu --noconfirm --needed git rust openssl dbus
+        run: pacman -Syu --noconfirm --needed git rust openssl dbus python
       - uses: actions/checkout@v7
       - name: Format
         run: cargo fmt --check

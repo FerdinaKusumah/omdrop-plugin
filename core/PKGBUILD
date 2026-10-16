@@ -24,7 +24,9 @@ license=('MIT')
 #   iproute2  send-to-peer's peer table (ip -6 neigh)
 depends=('glibc' 'gcc-libs' 'openssl' 'polkit' 'systemd' 'iproute2')
 makedepends=('cargo')
-checkdepends=('dbus')
+# dbus: the BlueZ and portal mocks. python: the command's tests for the
+# OMDROP_IMPLEMENTATION=python fallback, which runs the plugin's identity.py.
+checkdepends=('dbus' 'python')
 optdepends=('bluez: wake a nearby device over Bluetooth before sending or asking its name'
             '1password-cli: keep the Apple identity in 1Password'
             'ufw: the narrow firewall rule for the receiver'
