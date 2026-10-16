@@ -1,7 +1,13 @@
-"""Receiver readiness uses Debian's comparator and the dynamic loader."""
+"""Receiver readiness and version checks work without Arch's tools.
+
+Debian and Ubuntu have no vercmp, and a bare $(vercmp ...) there is an
+arithmetic syntax error that bash reads as "not older", so any contract
+passed. version_ge falls back to coreutils' sort -V.
+"""
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -22,6 +28,9 @@ class UbuntuReadinessTests(unittest.TestCase):
         self.env = {**os.environ, 'PATH': str(self.root),
                     'PYTHONPATH': str(self.root), 'CALLS': str(self.root / 'calls')}
         (self.root / 'python3').symlink_to(sys.executable)
+        # coreutils, which every distribution has; vercmp only where a test adds it.
+        for tool in ('sort', 'head'):
+            (self.root / tool).symlink_to(shutil.which(tool))
 
     def command(self, name, script):
         p = self.root / name
@@ -29,30 +38,48 @@ class UbuntuReadinessTests(unittest.TestCase):
         p.chmod(0o755)
 
     def run_function(self, name, preamble=''):
-        return subprocess.run(['/bin/bash', '-c', preamble + '\n' + function(name) + '\n' + name],
-                              env=self.env, capture_output=True, text=True)
+        return subprocess.run(['/bin/bash', '-c', '\n'.join(
+            [preamble, function('version_ge'), function(name), name])],
+            env=self.env, capture_output=True, text=True)
 
-    def contract(self, version, result=0):
-        self.env['COMPARISON_RESULT'] = str(result)
+    def contract(self, version):
         return self.run_function('backend_contract_ok',
-                                f'BACKEND_CONTRACT_MIN=0.7.0\nprobe_field() {{ echo "{version}"; }}')
+                                 f'BACKEND_CONTRACT_MIN=0.7.0\nprobe_field() {{ echo "{version}"; }}')
 
-    def test_debian_comparator_used_without_vercmp(self):
-        self.command('dpkg', 'echo "$*" > "$CALLS"\nexit "$COMPARISON_RESULT"\n')
-        self.assertEqual(self.contract('0.8.1').returncode, 0)
-        self.assertEqual((self.root / 'calls').read_text().strip(),
-                         '--compare-versions 0.8.1 ge 0.7.0')
-        self.assertNotEqual(self.contract('0.6.0', 1).returncode, 0)
+    def identity_check(self, contract):
+        return self.run_function('driver_identity_ready', f'''DRIVER_IDENTITY_VERSION=0.7.0
+radio_probe() {{ return 0; }}
+radio_probe_hung() {{ return 1; }}
+probe_field() {{ [ "$1" = contract ] && echo "{contract}" || echo owl; }}
+die() {{ printf '%s\\n' "$*" >&2; exit 1; }}''')
 
-    def test_arch_comparator_remains_preferred(self):
+    def test_contracts_compare_without_vercmp(self):
+        for version in ('0.7.0', '0.7.1', '0.8.1', '0.10.0', '1.0'):
+            with self.subTest(version=version):
+                result = self.contract(version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, '')
+        for version in ('0.6.9', '0.1.0', '', 'abc', '0.8.1a'):
+            with self.subTest(version=version):
+                self.assertNotEqual(self.contract(version).returncode, 0)
+
+    def test_an_old_contract_is_refused_at_the_identity_check_without_vercmp(self):
+        # The regression: this check passed 0.1.0 on Ubuntu, with two error lines.
+        result = self.identity_check('0.1.0')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('follows contract 0.7.0 or newer (owl follows 0.1.0)', result.stderr)
+        self.assertNotIn('syntax error', result.stderr)
+        result = self.identity_check('0.8.1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_vercmp_decides_where_it_exists(self):
+        # vercmp orders pkgrel, which sort -V alone is not trusted with.
         self.command('vercmp', 'echo "$*" > "$CALLS"\necho "$COMPARISON_RESULT"\n')
-        self.command('dpkg', 'exit 99\n')
-        self.assertEqual(self.contract('0.8.1', 1).returncode, 0)
+        self.env['COMPARISON_RESULT'] = '1'
+        self.assertEqual(self.contract('0.8.1').returncode, 0)
         self.assertEqual((self.root / 'calls').read_text().strip(), '0.8.1 0.7.0')
-        self.assertNotEqual(self.contract('0.6.0', -1).returncode, 0)
-
-    def test_missing_contract_is_rejected(self):
-        self.assertNotEqual(self.contract('').returncode, 0)
+        self.env['COMPARISON_RESULT'] = '-1'
+        self.assertNotEqual(self.contract('0.8.1').returncode, 0)
 
     def test_library_probe_uses_soname_not_a_distribution_path(self):
         (self.root / 'libarchive.py').write_text('stream_reader = object()\n')

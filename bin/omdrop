@@ -590,6 +590,22 @@ cmd_identity() {
   esac
 }
 
+# Whether version $1 is $2 or newer. pacman's vercmp where it exists, which
+# also orders pkgrel and epoch; otherwise coreutils' sort -V, which every
+# distribution has and which orders plain dotted versions, such as the
+# contract a backend reports, the same way. Anything else is not taken as
+# newer there: sort -V would put "abc" after "0.7.0", where vercmp puts it
+# before. Debian and Ubuntu have no vercmp, and a bare $(vercmp ...) there is
+# an arithmetic syntax error that reads as "not older".
+version_ge() {
+  if command -v vercmp >/dev/null 2>&1; then
+    (( $(vercmp "$1" "$2") >= 0 ))
+  else
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)*(-[0-9]+(\.[0-9]+)*)?$ ]] || return 1
+    [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$2" ]]
+  fi
+}
+
 # Moving the Apple identity off disk needs a driver whose sender follows the
 # identity contract. An older sender finds certificate.pem missing and makes
 # a self-signed pair under the Apple identity's names.
@@ -599,14 +615,14 @@ driver_identity_ready() {
     radio_probe_hung && die "$(radio_probe_hung_say)"
     # A backend states which omdrop-awdl helper contract it follows.
     installed=$(probe_field contract)
-    if [[ -z "$installed" ]] || (( $(vercmp "$installed" "$DRIVER_IDENTITY_VERSION") < 0 )); then
+    if [[ -z "$installed" ]] || ! version_ge "$installed" "$DRIVER_IDENTITY_VERSION"; then
       die "Keeping the identity in 1Password needs a radio backend that follows contract $DRIVER_IDENTITY_VERSION or newer ($(probe_field backend) follows ${installed:-none})."
     fi
     return 0
   fi
   installed=$(pacman -Q "$DRIVER_PKG" 2>/dev/null) || installed=
   installed=${installed##* }
-  if [[ -z "$installed" ]] || (( $(vercmp "$installed" "$DRIVER_IDENTITY_VERSION") < 0 )); then
+  if [[ -z "$installed" ]] || ! version_ge "$installed" "$DRIVER_IDENTITY_VERSION"; then
     die "Keeping the identity in 1Password needs driver $DRIVER_IDENTITY_VERSION or newer (installed: ${installed:-none}). Update it with: omdrop install-driver"
   fi
 }
@@ -852,12 +868,7 @@ for m in json.loads(os.environ["PROBE"]).get("missing") or []:
 backend_contract_ok() {
   local contract
   contract=$(probe_field contract)
-  [[ -n "$contract" ]] || return 1
-  if command -v vercmp >/dev/null 2>&1; then
-    (( $(vercmp "$contract" "$BACKEND_CONTRACT_MIN") >= 0 ))
-  else
-    dpkg --compare-versions "$contract" ge "$BACKEND_CONTRACT_MIN"
-  fi
+  [[ -n "$contract" ]] && version_ge "$contract" "$BACKEND_CONTRACT_MIN"
 }
 
 backend_contract_say() {
