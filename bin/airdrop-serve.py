@@ -1074,6 +1074,8 @@ class Handler(BaseHTTPRequestHandler):
             UPLOAD_SLOTS.release()
         self.send_response(200)
         self.send_header('Content-Length', '0')
+        # Finish the transfer now rather than waiting for the idle timeout.
+        self.send_header('Connection', 'close')
         self.end_headers()
         if ended_early:
             self.drain_before_close()
