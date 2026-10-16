@@ -354,10 +354,14 @@ pub fn cmd_on(args: &[String]) -> i32 {
     crate::status::cmd_status(&[])
 }
 
-/// How long `pkexec HELPER start` may take: the backend contract gives
-/// `up` 300 s, and this is that plus a margin. The identity lock is held
-/// meanwhile, so without a bound a hung helper would hang every `off` too.
-pub const RADIO_START_LIMIT: Duration = Duration::from_secs(330);
+/// How long `pkexec HELPER start` may take: the backend contract's bound on
+/// `start` (docs/backend-contract.md), which omdrop-radio's
+/// `start_returns_within_the_contracts_bound` test checks against its own
+/// waits and hook timeouts. Giving up sooner would stop a start that was
+/// going to work, such as one waiting for a closing window and then a slow
+/// `up`. The identity lock is held meanwhile, so without a bound a hung
+/// helper would hang every `off` too.
+pub const RADIO_START_LIMIT: Duration = Duration::from_secs(720);
 
 enum Radio {
     Up,

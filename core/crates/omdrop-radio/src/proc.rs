@@ -310,12 +310,12 @@ pub struct Opts {
 const LINE_MAX: usize = 4096;
 /// After the program exits, how long its pipes may stay open (a daemon it
 /// left behind holding them) before we stop reading.
-const DRAIN: Duration = Duration::from_secs(1);
+pub(crate) const DRAIN: Duration = Duration::from_secs(1);
 /// Between TERM and KILL for a program that outlives its timeout.
-const GRACE: Duration = Duration::from_secs(2);
+pub(crate) const GRACE: Duration = Duration::from_secs(2);
 /// After KILL, how long to wait for the exit. A process in uninterruptible
 /// sleep (blocked behind a hung firmware) cannot die; we stop waiting.
-const REAP: Duration = Duration::from_secs(5);
+pub(crate) const REAP: Duration = Duration::from_secs(5);
 
 /// Run a backend hook from the hook directory, checked first.
 pub fn hook(ctx: &mut Ctx, name: &str, args: &[&str], opts: Opts) -> Run {

@@ -110,10 +110,11 @@ pub fn cmd_identity_child(args: &[String]) -> i32 {
 /// inherit it and hold it for the life of the window. Dropping it unlocks.
 pub struct IdentityLock(#[allow(dead_code)] File);
 
-/// The longest anyone legitimately holds the lock: `on` while the receiver
-/// starts (its unit waits up to 40 s for the port and awdl0's address) and
-/// the radio comes up (bounded by `RADIO_START_LIMIT`, 330 s).
-const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(420);
+/// The longest anyone legitimately holds the lock: `on` while the radio comes
+/// up (bounded by `RADIO_START_LIMIT`) and the receiver starts (its unit
+/// waits up to 40 s for the port and awdl0's address), plus a margin.
+const LOCK_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(crate::window::RADIO_START_LIMIT.as_secs() + 90);
 
 pub fn identity_lock() -> IdentityLock {
     let dir = ctx().state_dir();

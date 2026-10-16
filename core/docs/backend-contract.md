@@ -119,6 +119,13 @@ stdout or stderr open. Core stops reading a hook's output 1 s after the hook
 exits, whether or not the pipes have closed. `down` must stop any such
 process.
 
+`start` as a whole returns within **720 s**, its bound for callers: the
+window lock (10 s) and a wait for a closing window (90 s), then `probe`,
+`up` and `identity` at their timeouts plus the kill grace above (8 s each),
+and on a failure `down`. A caller must wait at least that long (`omdrop`
+does), or it gives up on a start that was going to work. omdrop-radio's
+`start_returns_within_the_contracts_bound` test keeps the sum under it.
+
 ### Output
 
 - **stderr is the log.** Write one line per event. Core copies each line to
