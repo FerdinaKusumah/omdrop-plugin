@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/omdrop-identity",
+    "crates/omdrop-proto",
+    "crates/omdrop-receiver",
+    "crates/omdrop-send",
+    "crates/omdrop-adv",
+    "crates/omdrop-radio",
+    "crates/omdrop-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# The oldest toolchain that builds the workspace and its tests with the locked
+# dependencies: `if let ... && ...` chains need 1.88 (1.87 fails with E0658).
+# No locked dependency needs more than 1.85.
+rust-version = "1.88"
+license = "MIT"
+authors = ["Netmojo Systems <56850867+netmojo@users.noreply.github.com>"]
+repository = "https://github.com/netmojo-systems/omdrop-plugin"
+
+# One version of each dependency for the whole workspace. Crates opt in with
+# `foo.workspace = true`. Keep this list short: every entry is code that runs
+# on a user's machine, some of it as root.
+[workspace.dependencies]
+omdrop-identity = { path = "crates/omdrop-identity" }
+omdrop-proto = { path = "crates/omdrop-proto" }
+omdrop-send = { path = "crates/omdrop-send" }
+omdrop-adv = { path = "crates/omdrop-adv" }
+
+base64 = "0.22"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+hex = "0.4"
+httparse = "1"
+# The Ask's FileIcon thumbnail, as airdrop-send.py made with PIL (omdrop-send).
+# Pure-Rust decoders only; the user's own files, never network input.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+libc = "0.2"
+plist = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+# SO_REUSEPORT on the mDNS querier's port-5353 socket (omdrop-send).
+socket2 = "0.6"
+# config.toml: `omdrop name/dir/limit` set one key keeping the user's comments
+# and layout (omdrop-cli); the receiver validates it (omdrop-receiver).
+toml_edit = { version = "0.23", default-features = false, features = ["parse", "display"] }
+# NFC for received file names, as the Python receiver's safe_name (omdrop-proto).
+unicode-normalization = "0.1"
+# BlueZ LEAdvertisingManager1 for the BLE wake advert (omdrop-adv). Blocking
+# API over its own internal executor thread; no async runtime in callers.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+zeroize = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

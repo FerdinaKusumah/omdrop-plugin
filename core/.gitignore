@@ -1,0 +1,6 @@
+/target
+__pycache__/
+# makepkg -si in this directory
+/src/
+/pkg/
+*.pkg.tar*

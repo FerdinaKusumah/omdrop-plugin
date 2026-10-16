@@ -42,6 +42,30 @@ CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/airdrop/config.toml"
 SELF="$(readlink -f "$0")"
 PROJ="$(cd "$(dirname "$SELF")/.." && pwd)"
 
+# omdrop-core (core/ in this repository) is the same command in Rust, built
+# and installed as its own package. When it is installed, every command goes
+# to it: the panel, the PATH link and the systemd units all run this file, and
+# `exec -a "$0"` lets core find this plugin through the path we were run as.
+# OMDROP_IMPLEMENTATION picks the stack: python keeps this script and the
+# Python programs; rust requires core; unset uses core when it is installed.
+# Anything else is refused, so a typo cannot quietly pick a stack.
+# OMDROP_CORE moves the binary for tests. Never hand off to ourselves: a
+# /usr/bin/omdrop that is a link to this file would loop.
+OMDROP_CORE="${OMDROP_CORE:-/usr/bin/omdrop}"
+case "${OMDROP_IMPLEMENTATION:-}" in
+  python) ;;
+  rust|'')
+    if [[ -x "$OMDROP_CORE" && "$(readlink -f "$OMDROP_CORE")" != "$SELF" ]]; then
+      exec -a "$0" "$OMDROP_CORE" "$@"
+    elif [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
+      printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but omdrop-core is not installed at %s.\n' "$OMDROP_CORE" >&2
+      exit 2
+    fi ;;
+  *)
+    printf 'omdrop: OMDROP_IMPLEMENTATION must be python or rust, not "%s"\n' "$OMDROP_IMPLEMENTATION" >&2
+    exit 2 ;;
+esac
+
 # The version a bug report needs. manifest.json is the single source of truth
 # -- the marketplace reads it -- and the constant below is only a last resort.
 #

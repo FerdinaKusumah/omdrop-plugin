@@ -1,0 +1,31 @@
+[package]
+name = "omdrop-send"
+description = "Omdrop AirDrop sender (replaces airdrop-send.py and send-to-peer)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "airdrop-send"
+path = "src/bin/airdrop-send.rs"
+
+[[bin]]
+name = "send-to-peer"
+path = "src/bin/send-to-peer.rs"
+
+[dependencies]
+omdrop-identity.workspace = true
+omdrop-proto.workspace = true
+httparse.workspace = true
+image.workspace = true
+libc.workspace = true
+plist.workspace = true
+rustls.workspace = true
+socket2 = { workspace = true, features = ["all"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+zeroize.workspace = true

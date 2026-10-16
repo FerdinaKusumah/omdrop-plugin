@@ -210,6 +210,8 @@ rm -rf ~/.omdrop                    # this computer's AirDrop identity
 
 To report a bug or request a feature, [open an issue](https://github.com/netmojo-systems/omdrop-plugin/issues). [Pull requests](https://github.com/netmojo-systems/omdrop-plugin/pulls) are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) lists the setup details, hardware evidence, and tests a pull request needs.
 
+`core/` holds [omdrop-core](core/README.md), a Rust implementation of the `omdrop` command, the receiver, the sender and the root helper. It is not released yet. Once installed as its own package, the plugin hands every command to it. `OMDROP_IMPLEMENTATION=python` keeps the current programs, and `OMDROP_IMPLEMENTATION=rust` insists on core.
+
 ## Trademark
 
 "AirDrop" is a trademark of Apple Inc. Omdrop is an independent project, not affiliated with or endorsed by Apple.

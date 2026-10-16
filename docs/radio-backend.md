@@ -12,6 +12,12 @@ OWL on a MediaTek MT7925. The plugin finds the backend's helpers in
 `/usr/lib/omdrop`, on `PATH`, or through `OMDROP_DISCOVERABLE` and
 `OMDROP_SENDER`, and calls them as below.
 
+This page describes the interface the current programs use. omdrop-core
+(`core/`) uses the same `omdrop-discoverable` when a backend ships nothing
+else. A backend can instead provide per-operation hooks in
+`/usr/lib/omdrop/radio/`, as described in
+[the backend contract](../core/docs/backend-contract.md).
+
 ## `omdrop-discoverable`
 
 Run as root through `pkexec` (polkit), except where noted. pkexec drops the

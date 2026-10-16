@@ -44,6 +44,22 @@ If the change affects how Omdrop talks to an Apple device, show the behaviour be
 - Run `python3 -m unittest discover -s tests` on current `main` and on your branch. Report both counts.
 - Name every test that fails, and say whether it also fails on `main`.
 - Add a regression test that fails without your change and passes with it. Use real sockets and real TLS where the existing tests do. A test must not depend on the machine it runs on.
+- With omdrop-core installed (`/usr/bin/omdrop`), `bin/omdrop` hands every command to it, so the command-line tests then exercise core. Run them with `OMDROP_IMPLEMENTATION=python` to test the bash script.
+
+### omdrop-core
+
+`core/` holds omdrop-core, the same programs in Rust, as one Cargo workspace. It builds and installs as its own package (`makepkg -si` in `core/`); nothing in it runs from the plugin's clone. Its tests run as an ordinary user, never root:
+
+```bash
+cd core
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+```
+
+`core/README.md` covers the programs and how they find each other, and `core/docs/backend-contract.md` the hooks a radio backend provides.
+
+New development goes into `core/` only. The bash and Python programs remain as the fallback for installs without omdrop-core, are not developed further, and will be removed at 1.0.0, so a pull request that changes them will usually be asked to make the change in Rust instead. Security fixes are the exception: patches for the bash and Python programs are welcome, because installs without omdrop-core still run them.
 
 ### Receiver changes
 

@@ -1,0 +1,74 @@
+#!/bin/sh
+# A radio backend for the conformance tests (docs/backend-contract.md).
+#
+# One script, installed under every hook name: it acts on its own basename.
+# It drives a fake awdl0 under $OMDROP_RADIO_TEST_ROOT (T), which omdrop-radio
+# passes to hooks only while it honours its test seam (never as root).
+#
+#   T/calls            one line per call: "<hook> <args...>"
+#   T/env.<hook>       the environment the hook saw
+#   T/mock/<hook>.rc   exit with this code instead of 0
+#   T/mock/<hook>.sleep  sleep this long first (cancellation, timeouts)
+#   T/mock/<hook>.hold   wait while this file exists (a test removes it to
+#                        let the hook go on: a pause with no timing in it)
+#   T/mock/up.stdout   up's stdout (the announce settings)
+#   T/mock/probe.json  probe's answer instead of the default
+#   T/mock/no-link-local  up brings awdl0 up without an IPv6 link-local
+set -u
+T=${OMDROP_RADIO_TEST_ROOT:?the mock backend runs only under the test seam}
+hook=$(basename "$0")
+echo "$hook $*" >> "$T/calls"
+env | sort > "$T/env.$hook"
+rc=0
+[ -r "$T/mock/$hook.rc" ] && rc=$(cat "$T/mock/$hook.rc")
+if [ -r "$T/mock/$hook.sleep" ]; then
+  # A child of ours, so the TERM to the process group reaches it as well.
+  sleep "$(cat "$T/mock/$hook.sleep")"
+fi
+while [ -e "$T/mock/$hook.hold" ]; do sleep 0.05; done
+net=$T/sys/class/net/awdl0
+
+case $hook in
+  probe)
+    if [ -r "$T/mock/probe.json" ]; then cat "$T/mock/probe.json"
+    else echo '{"backend":"mock","version":"1.0","contract":"0.9.1","hooks":1,"hardware":true,"missing":[]}'
+    fi ;;
+  up)
+    echo "mock up: bringing awdl0 up" >&2
+    if [ "$rc" = 0 ]; then
+      mkdir -p "$net/statistics" "$T/proc/net"
+      [ -e "$net/statistics/rx_packets" ] || echo 0 > "$net/statistics/rx_packets"
+      echo 02:00:00:00:00:01 > "$net/address"
+      if [ ! -e "$T/mock/no-link-local" ]; then
+        echo "fe800000000000000000000000000001 0b 40 20 80 awdl0" > "$T/proc/net/if_inet6"
+      else
+        : > "$T/proc/net/if_inet6"
+      fi
+      [ -r "$T/mock/up.stdout" ] && cat "$T/mock/up.stdout"
+    elif [ "$rc" = 4 ]; then
+      echo "Mock radio: no such radio here." >&2
+    else
+      echo "Mock radio: the data path is parked. Try again in a moment." >&2
+    fi ;;
+  identity) echo "mock identity: published" >&2 ;;
+  tick) : ;;
+  down) echo "mock down: $*" >&2 ;;
+  peer-watch)
+    trap 'echo "peer-watch TERM" >> "$T/calls"; exit 0' TERM
+    while :; do sleep 1; done ;;
+  peers)
+    if [ "$rc" = 0 ]; then
+      echo "advertisers.mock table_len=1 peers=1"
+      echo "    aa:bb:cc:dd:ee:ff  rssi= -50/-52  aw_counter=1 top=aa:bb:cc:dd:ee:ff dist=0"
+    else
+      echo "awdl_advertisers: no reply (is AWDL enabled?)" >&2
+    fi ;;
+  diag) echo "mock diag: sampling" >&2; echo "diag over $1 s" ;;
+  read) echo "mock read: $1" >&2; printf '%s: 4 bytes\n  00 01 02 03\n' "$1" ;;
+  trace)
+    echo "mock trace: $1" >&2
+    case $1 in on) echo 1 > "$T/trace" ;; off) echo 0 > "$T/trace" ;; esac
+    echo "awdl_trace=$(cat "$T/trace" 2>/dev/null || echo 0)" ;;
+  *) echo "mock: unknown hook $hook" >&2; exit 2 ;;
+esac
+exit "$rc"

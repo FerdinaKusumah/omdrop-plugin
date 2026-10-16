@@ -1,0 +1,94 @@
+# Maintainer: Netmojo Systems <56850867+netmojo@users.noreply.github.com>
+#
+# omdrop-core: the radio-independent half of Omdrop (AirDrop for Omarchy). The
+# `omdrop` command, the receiver, the sender, identity, the advertisers, and
+# the one root entry point. A radio backend (brcmfmac-awdl-dkms on Apple
+# Broadcom Wi-Fi, or omdrop-owl) provides the hooks in /usr/lib/omdrop/radio/
+# that make awdl0 exist; see docs/backend-contract.md.
+#
+# Built from this checkout, like omdrop-awdl's PKGBUILD: run `makepkg -si`
+# here. Dependencies are fetched in prepare() with --locked and the build is
+# --frozen, the omarchy-pkgs house pattern for Rust.
+
+pkgname=omdrop-core
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Omdrop core: send and receive with nearby Apple devices over AirDrop (CLI, receiver, sender, identity, root helper)"
+arch=('aarch64' 'x86_64')
+url="https://github.com/netmojo-systems/omdrop-plugin"
+license=('MIT')
+# Programs the binaries run, by package:
+#   openssl   validation-record and certificate checks, the self-signed pair
+#   polkit    pkexec, the root helper's only way in
+#   systemd   the receiver's user unit, the window timer, journalctl
+#   iproute2  send-to-peer's peer table (ip -6 neigh)
+depends=('glibc' 'gcc-libs' 'openssl' 'polkit' 'systemd' 'iproute2')
+makedepends=('cargo')
+# dbus: the BlueZ and portal mocks. python: the command's tests for the
+# OMDROP_IMPLEMENTATION=python fallback, which runs the plugin's identity.py.
+checkdepends=('dbus' 'python')
+optdepends=('bluez: wake a nearby device over Bluetooth before sending or asking its name'
+            '1password-cli: keep the Apple identity in 1Password'
+            'ufw: the narrow firewall rule for the receiver'
+            'wl-clipboard: copy a received link'
+            'xdg-desktop-portal: the file chooser for send --pick and dir --pick')
+options=('!lto' '!debug')
+source=()
+sha256sums=()
+
+_target() { rustc -vV | sed -n 's/^host: //p'; }
+
+# The build tree is this checkout (startdir) and the crates are fetched under
+# srcdir, so both paths would otherwise be compiled into the binaries (panic
+# locations, file!()), naming the builder's home directory and making the
+# build depend on where it ran; makepkg warns "Package contains reference to
+# $srcdir". Std-library paths from generic code land there too, and under
+# rustup the toolchain lives in the builder's home. Map all three to fixed
+# prefixes. rustc applies the last matching mapping, so srcdir, which may sit
+# inside startdir, comes after it. build() and check() share the flags, or
+# check() would rebuild everything.
+_cargo_env() {
+  export CARGO_HOME="${srcdir}/cargo-home" CARGO_TARGET_DIR="${srcdir}/target"
+  local sysroot; sysroot=$(rustc --print sysroot)
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${sysroot}=/usr/src/rust --remap-path-prefix=${startdir}=/usr/src/debug/${pkgname} --remap-path-prefix=${srcdir}=/usr/src/debug/${pkgname}"
+}
+
+prepare() {
+  cd "${startdir}"
+  export CARGO_HOME="${srcdir}/cargo-home"
+  cargo fetch --locked --target "$(_target)"
+}
+
+build() {
+  cd "${startdir}"
+  _cargo_env
+  cargo build --frozen --release --workspace
+}
+
+check() {
+  cd "${startdir}"
+  _cargo_env
+  cargo test --frozen --release --workspace
+}
+
+package() {
+  local bin="${srcdir}/target/release"
+
+  install -Dm755 "${bin}/omdrop" "${pkgdir}/usr/bin/omdrop"
+
+  # Everything else beside the root helper, in a root-owned directory: the
+  # polkit action binds to one exact path, and the helper finds the
+  # advertisers beside itself. A helper anywhere the user can write would
+  # hand that user root.
+  local lib="${pkgdir}/usr/lib/omdrop-core" prog
+  for prog in omdrop-radio omdrop-receiver omdrop-adv airdrop-send send-to-peer; do
+    install -Dm755 "${bin}/${prog}" "${lib}/${prog}"
+  done
+
+  install -Dm644 "${startdir}/packaging/org.omarchy.omdrop.radio.policy" \
+    "${pkgdir}/usr/share/polkit-1/actions/org.omarchy.omdrop.radio.policy"
+
+  install -Dm644 "${startdir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 "${startdir}/docs/backend-contract.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/backend-contract.md"
+}
