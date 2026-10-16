@@ -3,13 +3,19 @@
 //! and the one firewall rule Omdrop needs.
 
 use std::path::Path;
+use std::process::Command;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use serde_json::{Map, Value};
 
 use crate::ctx::ctx;
 use crate::identity::{Out, id};
-use crate::proc::{capture, run, run_quiet};
-use crate::util::{die, have, home, is_executable, py_json, shell_quote};
+use crate::proc::{Captured, capture, capture_bounded, run, run_quiet};
+use crate::util::{
+    die, env_nonempty, have, home, is_executable, py_json, shell_quote, strip_trailing_newlines,
+};
 
 const DRIVER_REPO: &str = "https://github.com/netmojo-systems/omdrop-awdl.git";
 /// The package name a repository would carry it under, and the fallback source.
@@ -30,6 +36,22 @@ const DRIVER_IDENTITY_VERSION: &str = "0.7.0";
 /// The Python receiver's one outside import, and the kernel keyring library
 /// it reads the 1Password identity cache through.
 const RECEIVER_PKGS: &str = "python-libarchive-c keyutils";
+
+/// The oldest omdrop-awdl helper contract this works with, for every backend
+/// that probes. 0.7.0 is the first whose sender, send-to-peer and advertiser
+/// follow the identity contract. Newer features are found by asking the
+/// sender (`--help`), not by version.
+const BACKEND_CONTRACT_MIN: &str = "0.7.0";
+/// Item IDs Omdrop reports itself, and the panel acts on. A backend's own
+/// item under one of these names is passed on as backend-<id>, so its
+/// sentence still shows but no button offers a fix that cannot fix it.
+const PLUGIN_ITEM_IDS: [&str; 3] = ["driver", "library", "service"];
+/// A probe is a few hundred bytes; anything past this is not an answer.
+const PROBE_MAX: usize = 1 << 20;
+
+/// The first and only finding on a machine the Broadcom driver cannot help.
+const NO_BROADCOM: &str = "This computer has no Apple Broadcom Wi-Fi, which Omdrop's own driver needs: it runs only on Apple Silicon Macs, not in a virtual machine. Other Wi-Fi cards need a different radio backend (docs/radio-backend.md).";
+const LAUNCHER: &str = "omarchy-launch-floating-terminal-with-presentation";
 
 /// UFW's default-drop policy sees AirDrop's TCP after the AWDL data path has
 /// done its job, so a healthy radio can advertise while every SYN is
@@ -76,14 +98,230 @@ pub fn receiver_libs_installed() -> bool {
 
 /// Broadcom (vendor 0x14e4) network hardware on PCI, where Apple's Wi-Fi
 /// sits on Apple Silicon. A VM such as Try Omarchy has no AWDL-capable radio.
+/// OMDROP_SYSFS lets the tests describe the hardware instead of depending on
+/// the machine they run on.
 pub fn apple_broadcom_wifi() -> bool {
-    let Ok(entries) = std::fs::read_dir("/sys/bus/pci/devices") else {
+    let sysfs = env_nonempty("OMDROP_SYSFS").unwrap_or_else(|| "/sys".to_string());
+    let Ok(entries) = std::fs::read_dir(Path::new(&sysfs).join("bus/pci/devices")) else {
         return false;
     };
     entries.flatten().any(|e| {
         let read = |n: &str| crate::util::read_trimmed(&e.path().join(n)).unwrap_or_default();
         read("vendor") == "0x14e4" && read("class").starts_with("0x0280")
     })
+}
+
+// The radio half is a separate package: omdrop-awdl for Apple's Broadcom
+// Wi-Fi, or another radio backend. A backend may describe itself through
+// `<helper> probe --json`, run unprivileged (the plugin's
+// docs/radio-backend.md; omdrop-radio relays its hooks' answer). One that
+// does owns the hardware and installation checks for its own radio; one
+// that does not is taken to be omdrop-awdl on Apple's Broadcom Wi-Fi and
+// gets the Broadcom checks, unchanged. omdrop-awdl 0.9.x answers a
+// subcommand it does not know with its usage and exit 2: "no probe".
+
+/// What the helper said when asked.
+enum Probe {
+    /// No answer that counts: omdrop-awdl, or no helper at all.
+    None,
+    /// It did not answer in time. Still a backend that probes: omdrop-awdl
+    /// answers an unknown command at once, so falling back to its Broadcom
+    /// checks would only tell a non-Mac it is not one.
+    Hung,
+    /// A JSON object with a non-empty `backend` string.
+    Answer(Map<String, Value>),
+}
+
+/// `OMDROP_PROBE_TIMEOUT`, as given (the tests wait less), default 5.
+fn probe_timeout() -> String {
+    env_nonempty("OMDROP_PROBE_TIMEOUT").unwrap_or_else(|| "5".to_string())
+}
+
+/// timeout(1)'s DURATION: a non-negative number with an optional s, m, h
+/// or d. `Some(None)`: 0, no deadline. `None`: not a duration, which
+/// timeout refuses, so nothing is asked.
+fn parse_duration(text: &str) -> Option<Option<Duration>> {
+    let (num, unit) = match text.strip_suffix(['s', 'm', 'h', 'd']) {
+        Some(n) => (n, &text[n.len()..]),
+        None => (text, "s"),
+    };
+    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    let scale = match unit {
+        "m" => 60.0,
+        "h" => 3600.0,
+        "d" => 86400.0,
+        _ => 1.0,
+    };
+    let secs = num.parse::<f64>().ok()? * scale;
+    let limit = Duration::try_from_secs_f64(secs).ok()?;
+    Some((!limit.is_zero()).then_some(limit))
+}
+
+/// The answer, if it is one: a JSON object whose `backend` is a string with
+/// something in it besides whitespace.
+fn parse_probe(out: &[u8]) -> Option<Map<String, Value>> {
+    let Ok(Value::Object(o)) = serde_json::from_slice::<Value>(out) else {
+        return None;
+    };
+    o.get("backend")
+        .and_then(Value::as_str)
+        .is_some_and(|b| !b.trim().is_empty())
+        .then_some(o)
+}
+
+/// Asked once per run. The probe reads a few files and answers; one that
+/// hangs would hang doctor with it, and the panel waiting on doctor, so it
+/// gets OMDROP_PROBE_TIMEOUT seconds, in a process group of its own that
+/// goes whole at the deadline.
+fn ask_probe() -> Probe {
+    let helper = &ctx().discoverable;
+    if !is_executable(helper) {
+        return Probe::None;
+    }
+    let Some(limit) = parse_duration(&probe_timeout()) else {
+        return Probe::None;
+    };
+    let mut cmd = Command::new(helper);
+    cmd.args(["probe", "--json"]);
+    match capture_bounded(&mut cmd, limit.map(|l| Instant::now() + l), PROBE_MAX) {
+        Captured::TimedOut => Probe::Hung,
+        // What `timeout` reports for a helper it had to stop, or that was
+        // killed anyway: the same as no answer in time.
+        Captured::Done(124 | 137, _) => Probe::Hung,
+        Captured::Done(0, out) => parse_probe(&out).map_or(Probe::None, Probe::Answer),
+        Captured::Done(..) | Captured::TooLong => Probe::None,
+    }
+}
+
+static PROBE: LazyLock<Probe> = LazyLock::new(ask_probe);
+
+fn radio_probe() -> &'static Probe {
+    &PROBE
+}
+
+fn probing() -> bool {
+    !matches!(radio_probe(), Probe::None)
+}
+
+fn radio_probe_hung() -> bool {
+    matches!(radio_probe(), Probe::Hung)
+}
+
+fn radio_probe_hung_say() -> String {
+    format!(
+        "The radio backend did not answer when asked what it needs ({} probe, {} seconds). Reinstalling or updating its package may help.",
+        ctx().discoverable.display(),
+        probe_timeout()
+    )
+}
+
+/// Python's `str()`, which the plugin's probe readers print with.
+fn py_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Bool(true) => "True".to_string(),
+        Value::Bool(false) => "False".to_string(),
+        Value::Null => "None".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn py_truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// One field of the probe as text: strings as they are, booleans as
+/// true/false, anything absent as nothing.
+fn probe_field(name: &str) -> String {
+    let Probe::Answer(o) = radio_probe() else {
+        return String::new();
+    };
+    let text = match o.get(name) {
+        None | Some(Value::Null) => return String::new(),
+        Some(Value::Bool(b)) => b.to_string(),
+        Some(v) => py_str(v),
+    };
+    strip_trailing_newlines(&text).to_string()
+}
+
+/// The backend's blockers, in its order, with an ID the panel acts on
+/// renamed backend-<id> and each sentence on one line.
+fn probe_missing() -> Vec<(String, String)> {
+    let Probe::Answer(o) = radio_probe() else {
+        return Vec::new();
+    };
+    let Some(Value::Array(items)) = o.get("missing") else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|m| {
+            let m = m.as_object()?;
+            let id = m.get("id").filter(|v| py_truthy(v))?;
+            let say = m.get("say").filter(|v| py_truthy(v))?;
+            let id = py_str(id);
+            let id = if PLUGIN_ITEM_IDS.contains(&id.as_str()) {
+                format!("backend-{id}")
+            } else {
+                id
+            };
+            let say = py_str(say).split_whitespace().collect::<Vec<_>>().join(" ");
+            Some((id, say))
+        })
+        .collect()
+}
+
+fn or_none(s: &str) -> &str {
+    if s.is_empty() { "none" } else { s }
+}
+
+/// Whether the backend follows at least the minimum contract. One that
+/// names none is taken to follow none.
+fn backend_contract_ok() -> bool {
+    let contract = probe_field("contract");
+    !contract.is_empty() && vercmp(&contract, BACKEND_CONTRACT_MIN).is_some_and(|c| c >= 0)
+}
+
+fn backend_contract_say() -> String {
+    format!(
+        "The installed radio backend ({}) follows helper contract {}, older than the {BACKEND_CONTRACT_MIN} this version of Omdrop needs. Update its package.",
+        probe_field("backend"),
+        or_none(&probe_field("contract"))
+    )
+}
+
+/// For messages that ask for a newer or missing radio helper: what provides
+/// it. `omdrop install-driver` builds omdrop-awdl; a backend that probes is
+/// a package of its own, which that command leaves alone.
+pub fn radio_pkg() -> &'static str {
+    if probing() {
+        "radio backend"
+    } else {
+        "Wi-Fi driver package"
+    }
+}
+
+/// And how to update it.
+pub fn radio_update() -> String {
+    if !probing() {
+        return "Update it with: omdrop install-driver".to_string();
+    }
+    let backend = probe_field("backend");
+    let named = if backend.is_empty() {
+        String::new()
+    } else {
+        format!(" ({backend})")
+    };
+    format!("Update the package that provides it{named}: omdrop install-driver leaves it alone.")
 }
 
 /// The installed driver package's version, from pacman.
@@ -111,60 +349,118 @@ pub fn driver_current() -> bool {
 
 /// Moving the Apple identity off disk needs a driver whose sender follows the
 /// identity contract: an older one finds certificate.pem missing and makes a
-/// self-signed pair under the Apple identity's names.
+/// self-signed pair under the Apple identity's names. A backend that probes
+/// states the contract it follows; otherwise the driver package's version
+/// is the contract.
 pub fn driver_identity_ready() {
+    match radio_probe() {
+        Probe::Hung => die(radio_probe_hung_say()),
+        Probe::Answer(_) => {
+            let installed = probe_field("contract");
+            if installed.is_empty()
+                || vercmp(&installed, DRIVER_IDENTITY_VERSION).is_some_and(|c| c < 0)
+            {
+                die(format!(
+                    "Keeping the identity in 1Password needs a radio backend that follows contract {DRIVER_IDENTITY_VERSION} or newer ({} follows {}).",
+                    probe_field("backend"),
+                    or_none(&installed)
+                ));
+            }
+            return;
+        }
+        Probe::None => {}
+    }
     let installed = installed_driver().unwrap_or_default();
     let too_old =
         installed.is_empty() || vercmp(&installed, DRIVER_IDENTITY_VERSION).is_some_and(|c| c < 0);
     if too_old {
-        let shown = if installed.is_empty() {
-            "none"
-        } else {
-            &installed
-        };
         die(format!(
-            "Keeping the identity in 1Password needs driver {DRIVER_IDENTITY_VERSION} or newer (installed: {shown}). Update it with: omdrop install-driver"
+            "Keeping the identity in 1Password needs driver {DRIVER_IDENTITY_VERSION} or newer (installed: {}). Update it with: omdrop install-driver",
+            or_none(&installed)
         ));
     }
 }
 
-/// What is missing, in the order it has to be fixed, one "id<TAB>sentence"
-/// line each: the id is for the panel, which offers to fix the one thing it
+fn service_missing() -> Option<(String, String)> {
+    (!crate::status::have_unit()).then(|| {
+        (
+            "service".to_string(),
+            "The service that receives files is not installed yet. Turning Omdrop on installs it."
+                .to_string(),
+        )
+    })
+}
+
+/// What is missing, in the order it has to be fixed, one (id, sentence)
+/// each: the id is for the panel, which offers to fix the one thing it
 /// can, and the sentence is for someone holding a laptop.
-pub fn prereqs_missing() -> Vec<(&'static str, String)> {
+pub fn prereqs_missing() -> Vec<(String, String)> {
     let mut missing = Vec::new();
+    match radio_probe() {
+        // A backend that does not answer is alone: install-driver refuses to
+        // run for it, so a library item would offer the panel's button for
+        // nothing.
+        Probe::Hung => {
+            missing.push(("backend".to_string(), radio_probe_hung_say()));
+            return missing;
+        }
+        Probe::Answer(_) => {
+            // Hardware the backend cannot drive is, again, first and alone.
+            if probe_field("hardware") == "false" {
+                missing.extend(
+                    probe_missing()
+                        .into_iter()
+                        .filter(|(id, _)| id == "hardware"),
+                );
+                if missing.is_empty() {
+                    missing.push((
+                        "hardware".to_string(),
+                        format!(
+                            "This computer's Wi-Fi is not one the installed radio backend ({}) can drive.",
+                            probe_field("backend")
+                        ),
+                    ));
+                }
+                return missing;
+            }
+            if !backend_contract_ok() {
+                missing.push(("backend".to_string(), backend_contract_say()));
+            }
+            missing.extend(probe_missing());
+            if !receiver_libs_installed() {
+                missing.push((
+                    "library".to_string(),
+                    format!("Packages the receiver needs ({RECEIVER_PKGS}) are not installed. The button below installs them."),
+                ));
+            }
+            missing.extend(service_missing());
+            return missing;
+        }
+        Probe::None => {}
+    }
     // First, and alone: nothing else on this list can be fixed here.
     if !apple_broadcom_wifi() {
-        missing.push((
-            "hardware",
-            "This computer has no Apple Broadcom Wi-Fi, which AirDrop needs. Omdrop runs only on Apple Silicon Macs, not in a virtual machine.".to_string(),
-        ));
+        missing.push(("hardware".to_string(), NO_BROADCOM.to_string()));
         return missing;
     }
     if !receiver_libs_installed() {
         missing.push((
-            "library",
+            "library".to_string(),
             format!("Packages the receiver needs ({RECEIVER_PKGS}) are not installed. The button below installs them along with the driver."),
         ));
     }
     if !is_executable(&ctx().discoverable) {
         missing.push((
-            "driver",
+            "driver".to_string(),
             "The Wi-Fi driver that makes this computer visible to Apple devices is not installed. It has to be installed as an administrator.".to_string(),
         ));
     } else if !Path::new("/sys/class/net/awdl0").exists() {
         missing.push((
-            "radio",
+            "radio".to_string(),
             "The driver is installed but its Apple-compatible radio is not running yet, so nobody can see this computer. Restarting usually brings it up.".to_string(),
         ));
     }
-    if !crate::status::have_unit() {
-        missing.push((
-            "service",
-            "The service that receives files is not installed yet. Turning Omdrop on installs it."
-                .to_string(),
-        ));
-    }
+    missing.extend(service_missing());
     missing
 }
 
@@ -305,6 +601,9 @@ pub fn build_script(
 pub fn cmd_install_driver() -> i32 {
     let c = ctx();
     let self_q = shell_quote(&c.command_path().to_string_lossy());
+    if probing() {
+        return install_for_backend(&self_q);
+    }
     let helper = is_executable(&c.discoverable);
     if helper && driver_current() && receiver_libs_installed() {
         outln!(
@@ -313,9 +612,7 @@ pub fn cmd_install_driver() -> i32 {
         return 0;
     }
     if !apple_broadcom_wifi() {
-        die(
-            "This computer has no Apple Broadcom Wi-Fi, so the driver cannot do anything here. Omdrop runs only on Apple Silicon Macs, not in a virtual machine.",
-        );
+        die(NO_BROADCOM);
     }
     let libs_missing = !receiver_libs_installed();
     let driver_needed = !helper || !driver_current();
@@ -330,7 +627,7 @@ pub fn cmd_install_driver() -> i32 {
         ufw_active(),
     );
     const INTRO: &str = "Omdrop requires a patched wifi driver, which requires administrative privilege to install. You will be prompted for your password.";
-    if !have("omarchy-launch-floating-terminal-with-presentation") {
+    if !have(LAUNCHER) {
         outln!("{INTRO}");
         outln!();
         outln!("Install the driver with:");
@@ -338,22 +635,107 @@ pub fn cmd_install_driver() -> i32 {
         return 0;
     }
     outln!("Opening a terminal to install the driver.");
-    // A subshell, so a failed step ends the script and not the terminal, and
-    // tested on its own line, not with `||`: bash ignores `set -e` inside a
-    // subshell whose status a `||` is testing. Exit 130 skips the launcher's
-    // "Done!", which a failure should not show.
+    launch_install(&build, INTRO)
+}
+
+/// With a radio backend that probes, the radio is that package's business:
+/// it is installed (it answered), and it reports its own blockers through
+/// doctor. What remains is Omdrop's own part, the receiver's packages and
+/// its firewall rule, run the same way as the driver install.
+fn install_for_backend(self_q: &str) -> i32 {
+    // Without an answer there is no telling whether this backend is one
+    // Omdrop can work with, so nothing is installed for it.
+    if radio_probe_hung() {
+        die(radio_probe_hung_say());
+    }
+    // Omdrop's part is still worth installing; the backend's update is not
+    // something this command can do.
+    if !backend_contract_ok() {
+        errln!("{}", backend_contract_say());
+    }
+    let build = build_script(
+        self_q,
+        !receiver_libs_installed(),
+        false,
+        false,
+        ufw_active(),
+    );
+    if build == "set -e" {
+        outln!(
+            "The receiver's packages are installed and the radio comes from {} {}. Nothing to do.",
+            probe_field("backend"),
+            probe_field("version")
+        );
+        return 0;
+    }
+    if !have(LAUNCHER) {
+        outln!("Install what the receiver needs with:");
+        outln!("\n{build}\n");
+        return 0;
+    }
+    outln!("Opening a terminal to install what the receiver needs.");
+    launch_install(
+        &build,
+        "Omdrop needs a few packages for its receiver, which requires administrative privilege to install. You will be prompted for your password.",
+    )
+}
+
+/// Run an install script in a floating terminal the person watches. A
+/// subshell, so a failed step ends the script and not the terminal, and
+/// tested on its own line, not with `||`: bash ignores `set -e` inside a
+/// subshell whose status a `||` is testing. Exit 130 skips the launcher's
+/// "Done!", which a failure should not show.
+fn launch_install(build: &str, intro: &str) -> i32 {
     let script = format!(
         "( {build}\n); rc=$?; if [ $rc -ne 0 ]; then echo; echo \"Installing failed (exit $rc). The messages above say why.\"; read -rsn 1 -p 'Press any key to close...' </dev/tty; echo; exit 130; fi"
     );
-    run(
-        "omarchy-launch-floating-terminal-with-presentation",
-        &[format!("echo '{INTRO}'; echo; {script}")],
-    )
+    run(LAUNCHER, &[format!("echo '{intro}'; echo; {script}")])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_probe_timeout_reads_as_timeout_reads_it() {
+        assert_eq!(parse_duration("5"), Some(Some(Duration::from_secs(5))));
+        assert_eq!(
+            parse_duration("0.5"),
+            Some(Some(Duration::from_millis(500)))
+        );
+        assert_eq!(parse_duration("2m"), Some(Some(Duration::from_secs(120))));
+        assert_eq!(parse_duration("1s"), Some(Some(Duration::from_secs(1))));
+        assert_eq!(parse_duration("0"), Some(None));
+        for bad in ["", "s", "-1", "five", "1x", "1.2.3", "inf", "1e3"] {
+            assert_eq!(parse_duration(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_probe_needs_a_backend_name() {
+        assert!(parse_probe(br#"{"backend":"owl"}"#).is_some());
+        assert!(parse_probe(b"  {\"backend\":\" owl \"}\n").is_some());
+        for no in [
+            &br#"{}"#[..],
+            br#"{"backend":"  "}"#,
+            br#"{"backend":1}"#,
+            br#"["owl"]"#,
+            b"usage: omdrop-discoverable start|stop|status",
+            br#"{"backend":"owl"} trailing"#,
+        ] {
+            assert!(parse_probe(no).is_none(), "{}", String::from_utf8_lossy(no));
+        }
+    }
+
+    #[test]
+    fn probe_values_print_as_the_plugins_python_prints_them() {
+        assert_eq!(py_str(&Value::from("0.7.0")), "0.7.0");
+        assert_eq!(py_str(&Value::from(true)), "True");
+        assert_eq!(py_str(&Value::from(3)), "3");
+        assert!(!py_truthy(&Value::from("")) && !py_truthy(&Value::from(0)));
+        assert!(!py_truthy(&Value::Null) && !py_truthy(&serde_json::json!([])));
+        assert!(py_truthy(&Value::from("radio")) && py_truthy(&Value::from(7)));
+    }
 
     #[test]
     fn the_pinned_commit_is_a_full_sha_used_literally() {

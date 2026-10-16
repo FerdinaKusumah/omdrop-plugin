@@ -128,12 +128,12 @@ pub fn rr(
 
 /// The Internet checksum (RFC 1071) of `data`, odd length padded with zero.
 pub fn csum16(data: &[u8]) -> u16 {
-    let mut chunks = data.chunks_exact(2);
-    let mut sum: u64 = chunks
-        .by_ref()
-        .map(|w| u64::from(u16::from_be_bytes([w[0], w[1]])))
+    let (pairs, rest) = data.as_chunks::<2>();
+    let mut sum: u64 = pairs
+        .iter()
+        .map(|&w| u64::from(u16::from_be_bytes(w)))
         .sum();
-    if let [last] = chunks.remainder() {
+    if let [last] = rest {
         sum += u64::from(*last) << 8;
     }
     while sum >> 16 != 0 {

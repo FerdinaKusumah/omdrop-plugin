@@ -6,9 +6,11 @@
 //! start`), so separate copies keep parallel tests from seeing each other.
 
 use std::fs;
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 const HOOKS: [&str; 10] = [
@@ -30,9 +32,32 @@ struct Fx {
     bin: PathBuf,
 }
 
+/// Tests copy executables (the binary, the mock hooks) and start processes
+/// in parallel. A process forked while another test has a copy open for
+/// writing inherits that descriptor until it execs, and running the copy in
+/// that moment fails with ETXTBSY ("Text file busy"); under load this failed
+/// whichever test it landed on. So copying takes this lock exclusively, and
+/// every process start takes it shared, from fork until exec only.
+static FORK: RwLock<()> = RwLock::new(());
+
 fn install(src: &Path, dst: &Path) {
+    let _only_writer = FORK.write().unwrap_or_else(PoisonError::into_inner);
     fs::copy(src, dst).unwrap();
     fs::set_permissions(dst, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Start `c` while no executable is being written; see [`FORK`].
+fn spawn_quietly(c: &mut Command) -> io::Result<Child> {
+    let _forking = FORK.read().unwrap_or_else(PoisonError::into_inner);
+    c.spawn()
+}
+
+/// [`Command::output`], with the fork done under [`FORK`] and the wait not.
+fn output_of(c: &mut Command) -> io::Result<Output> {
+    c.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    spawn_quietly(c)?.wait_with_output()
 }
 
 impl Fx {
@@ -80,7 +105,7 @@ impl Fx {
         for _ in 0..50 {
             let mut c = self.command(args);
             c.envs(env.iter().copied());
-            match c.output() {
+            match output_of(&mut c) {
                 Ok(o) => return o,
                 Err(e) if e.raw_os_error() == Some(libc_etxtbsy()) => {
                     std::thread::sleep(Duration::from_millis(20))
@@ -93,12 +118,11 @@ impl Fx {
 
     fn spawn(&self, args: &[&str]) -> Child {
         for _ in 0..50 {
-            match self
-                .command(args)
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-            {
+            match spawn_quietly(
+                self.command(args)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped()),
+            ) {
                 Ok(c) => return c,
                 Err(e) if e.raw_os_error() == Some(libc_etxtbsy()) => {
                     std::thread::sleep(Duration::from_millis(20))
@@ -119,6 +143,14 @@ impl Fx {
 
     fn mock(&self, name: &str, content: &str) {
         fs::write(self.path("mock").join(name), content).unwrap();
+    }
+
+    /// Pause `hook` (the mock waits while `mock/<hook>.hold` exists) until
+    /// the guard drops, so a failing test never leaves a hook paused.
+    fn hold(&self, hook: &str) -> Hold {
+        let p = self.path("mock").join(format!("{hook}.hold"));
+        fs::write(&p, "").unwrap();
+        Hold(p)
     }
 
     fn calls(&self) -> Vec<String> {
@@ -142,17 +174,24 @@ impl Fx {
 
 impl Drop for Fx {
     fn drop(&mut self) {
-        let _ = self.command(&["stop"]).output();
+        let _ = output_of(&mut self.command(&["stop"]));
         // Anything still running from this fixture: its argv names our root.
         let root = self.root.as_os_str().as_encoded_bytes().to_vec();
         for pid in all_pids() {
             let argv = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
             if argv.windows(root.len()).any(|w| w == root.as_slice()) {
-                let _ = Command::new("kill")
-                    .args(["-KILL", &pid.to_string()])
-                    .status();
+                let _ = output_of(Command::new("kill").args(["-KILL", &pid.to_string()]));
             }
         }
+    }
+}
+
+/// A paused mock hook; see [`Fx::hold`].
+struct Hold(PathBuf);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -245,11 +284,14 @@ fn a_window_opens_runs_and_stops() {
     assert!((590..=600).contains(&remaining), "{remaining}");
     assert_eq!(fx.supervisors().len(), 1);
 
+    // The supervisor starts its children after `start` returns; under load
+    // the second may not be recorded yet, so wait for both.
+    assert!(wait_for(Duration::from_secs(30), || recorded(&fx).len() == 2));
     let kids = recorded(&fx);
     let tags: Vec<&str> = kids.iter().map(|(_, t)| t.as_str()).collect();
     assert_eq!(tags, ["mdns", "peers"]);
-    assert!(wait_for(Duration::from_secs(5), || fx.called("tick 1")));
-    assert!(wait_for(Duration::from_secs(5), || {
+    assert!(wait_for(Duration::from_secs(30), || fx.called("tick 1")));
+    assert!(wait_for(Duration::from_secs(30), || {
         fx.read("adv-calls")
             .contains("announce --iface awdl0 --count 40 --interval 0.02 --flags 137 --seq 100\n")
     }));
@@ -297,6 +339,114 @@ fn a_second_start_moves_the_deadline_instead_of_stacking() {
     assert!((290..=300).contains(&r), "{r}");
     assert_eq!(fx.supervisors().len(), 1);
     assert_eq!(fx.calls().iter().filter(|c| c.starts_with("up")).count(), 1);
+}
+
+fn ups(fx: &Fx) -> usize {
+    fx.calls().iter().filter(|c| c.starts_with("up ")).count()
+}
+
+/// Greptile P1 on PR #74: a press after the supervisor had decided to end the
+/// window, but before it exited, found it alive, rewrote `until` and exited 5
+/// ("extended"); the supervisor then closed the window anyway. Here the
+/// supervisor is held in `down expired`, in the middle of closing. The press
+/// must wait for it to finish and then open a new window.
+#[test]
+fn a_start_while_the_window_closes_opens_a_new_one() {
+    let fx = Fx::new();
+    fx.mock("up.stdout", r#"{"announce":{"period_s":1}}"#);
+    let down = fx.hold("down");
+    assert_eq!(fx.run(&["start", "2"]).status.code(), Some(0));
+    assert!(wait_for(Duration::from_secs(30), || fx.called("down expired")));
+    let old = fx.supervisors();
+    assert_eq!(old.len(), 1, "the closing supervisor is still running");
+
+    let mut again = fx.spawn(&["start", "600"]);
+    // Either it waits for the closing supervisor, or (the bug) it answers.
+    assert!(wait_for(Duration::from_secs(30), || {
+        fx.read("run/log").contains("the window is closing")
+            || !matches!(again.try_wait(), Ok(None))
+    }));
+    drop(down);
+    let o = again.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("the window is closing; opening a new one once it has"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(!alive(old[0]), "start opened a window over the closing one");
+    let s = fx.status();
+    assert_eq!(s["visible"], true, "{s}");
+    let r = s["remaining"].as_u64().unwrap();
+    assert!((500..=600).contains(&r), "{r}");
+    let new = fx.supervisors();
+    assert_eq!(new.len(), 1);
+    assert_ne!(new, old);
+    assert_eq!(ups(&fx), 2);
+    // The new window runs: its supervisor ticks on past a full interval.
+    let ticks = fx.calls().iter().filter(|c| c.starts_with("tick ")).count();
+    assert!(wait_for(Duration::from_secs(30), || {
+        fx.calls().iter().filter(|c| c.starts_with("tick ")).count() >= ticks + 2
+    }));
+    assert_eq!(fx.status()["visible"], true);
+    assert_eq!(fx.supervisors(), new);
+}
+
+/// The other order: a press after the deadline passed, but before the
+/// supervisor has looked at it (here held in `tick`), extends the window,
+/// and the supervisor keeps it open.
+#[test]
+fn a_start_before_the_supervisor_sees_the_deadline_extends_the_window() {
+    let fx = Fx::new();
+    fx.mock("up.stdout", r#"{"announce":{"period_s":1}}"#);
+    let tick = fx.hold("tick");
+    assert_eq!(fx.run(&["start", "2"]).status.code(), Some(0));
+    assert!(wait_for(Duration::from_secs(30), || fx.called("tick 1")));
+    assert!(wait_for(Duration::from_secs(30), || fx.status()["visible"] == false));
+    let sups = fx.supervisors();
+    assert_eq!(sups.len(), 1);
+
+    let o = fx.run(&["start", "600"]);
+    assert_eq!(o.status.code(), Some(5), "{}", stderr(&o));
+    assert!(stderr(&o).contains("window extended to "), "{}", stderr(&o));
+    drop(tick);
+    assert!(wait_for(Duration::from_secs(30), || fx.called("tick 2")));
+    assert!(!fx.called("down expired"), "{:?}", fx.calls());
+    assert_eq!(fx.supervisors(), sups);
+    let s = fx.status();
+    assert_eq!(s["visible"], true, "{s}");
+    let r = s["remaining"].as_u64().unwrap();
+    assert!((500..=600).contains(&r), "{r}");
+    assert_eq!(ups(&fx), 1);
+}
+
+/// `stop` reaches a start that is waiting for a closing window: it is
+/// cancelled, and opens nothing.
+#[test]
+fn stop_cancels_a_start_waiting_for_the_window_to_close() {
+    let fx = Fx::new();
+    fx.mock("up.stdout", r#"{"announce":{"period_s":1}}"#);
+    let down = fx.hold("down");
+    assert_eq!(fx.run(&["start", "2"]).status.code(), Some(0));
+    assert!(wait_for(Duration::from_secs(30), || fx.called("down expired")));
+    let mut again = fx.spawn(&["start", "600"]);
+    assert!(wait_for(Duration::from_secs(30), || fx
+        .read("run/log")
+        .contains("the window is closing")));
+
+    let mut stop = fx.spawn(&["stop"]);
+    assert!(wait_for(Duration::from_secs(30), || !matches!(
+        again.try_wait(),
+        Ok(None)
+    )));
+    drop(down);
+    let o = again.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(3), "{}", stderr(&o));
+    assert_eq!(stop.wait().unwrap().code(), Some(0));
+    assert_eq!(ups(&fx), 1);
+    assert!(fx.supervisors().is_empty());
+    assert!(!fx.path("run/until").exists());
+    assert_eq!(fx.status()["reason"], "stopped");
 }
 
 #[test]
@@ -549,11 +699,13 @@ fn a_direct_supervise_call_is_refused_and_leaves_the_token() {
         Some("0".repeat(31)),
         Some("0".repeat(32) + "\n"),
     ] {
-        let mut c = fx.command(&["__supervise", "0", "0"]);
-        if let Some(t) = &token {
-            c.env("OMDROP_SUPERVISOR_TOKEN", t);
-        }
-        let o = c.output().unwrap();
+        // run_with, not command().output(): it retries ETXTBSY like every
+        // other run here (a sibling test forking while our copy was open).
+        let env: Vec<(&str, &str)> = token
+            .as_deref()
+            .map(|t| vec![("OMDROP_SUPERVISOR_TOKEN", t)])
+            .unwrap_or_default();
+        let o = fx.run_with(&["__supervise", "0", "0"], &env);
         assert_eq!(o.status.code(), Some(2), "{token:?}");
         assert!(stderr(&o).contains("__supervise is internal"));
     }
@@ -728,7 +880,7 @@ fn bystander(leader: bool) -> Child {
     if leader {
         std::os::unix::process::CommandExt::process_group(&mut c, 0);
     }
-    c.spawn().unwrap()
+    spawn_quietly(&mut c).unwrap()
 }
 
 fn mode_of(p: &Path) -> u32 {
@@ -830,12 +982,20 @@ fn stop_kills_the_hook_a_killed_supervisor_was_running() {
     let fx = Fx::new();
     fx.mock("up.stdout", r#"{"announce":{"period_s":1}}"#);
     assert_eq!(fx.run(&["start", "0"]).status.code(), Some(0));
+    // Tick 1 must have finished before ticks start hanging, or under load
+    // tick 1 itself sleeps 60 s and tick 2 never comes. The mock logs a call
+    // before reading its sleep, so wait for the announcer burst that follows
+    // tick 1 (--seq 100), not for the "tick 1" line.
+    assert!(wait_for(Duration::from_secs(30), || fs::read_to_string(
+        fx.path("adv-calls")
+    )
+    .is_ok_and(|s| s.contains("--seq 100"))));
     fx.mock("tick.sleep", "60");
-    assert!(wait_for(Duration::from_secs(5), || fx
+    assert!(wait_for(Duration::from_secs(30), || fx
         .calls()
         .iter()
         .any(|c| c.starts_with("tick ") && c != "tick 1")));
-    assert!(wait_for(Duration::from_secs(5), || fx
+    assert!(wait_for(Duration::from_secs(30), || fx
         .path("run/hook.pgid")
         .exists()));
     let pgid: u32 = fx
@@ -848,10 +1008,7 @@ fn stop_kills_the_hook_a_killed_supervisor_was_running() {
     assert!(alive(pgid));
     let sups = fx.supervisors();
     assert_eq!(sups.len(), 1);
-    Command::new("kill")
-        .args(["-KILL", &sups[0].to_string()])
-        .status()
-        .unwrap();
+    output_of(Command::new("kill").args(["-KILL", &sups[0].to_string()])).unwrap();
     assert!(wait_for(Duration::from_secs(5), || fx
         .supervisors()
         .is_empty()));
@@ -897,13 +1054,14 @@ fn legacy_supervisor(fx: &Fx, argv: &[&str]) -> Child {
     let legacy = fx.path("legacy/omdrop-discoverable");
     fs::create_dir_all(legacy.parent().unwrap()).unwrap();
     fs::write(&legacy, "while :; do sleep 1; done\n").unwrap();
-    let c = Command::new("bash")
-        .args(argv)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let c = spawn_quietly(
+        Command::new("bash")
+            .args(argv)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .unwrap();
     let want: Vec<u8> = std::iter::once("bash")
         .chain(argv.iter().copied())
         .flat_map(|a| a.bytes().chain([0]))

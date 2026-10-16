@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::config::{effective_name, setting_set};
 use crate::ctx::{DEFAULT_SEND_WAIT, DEFAULT_WINDOW, ctx};
-use crate::driver::awdl_link_local;
+use crate::driver::{awdl_link_local, radio_pkg, radio_update};
 use crate::identity::{Out, id};
 use crate::proc::{
     LineReader, Read1, cancelled, capture_merged, pipe, run_cancellable, spawn_group,
@@ -144,9 +144,11 @@ fn describe_files(files: &[OsString]) -> String {
 
 fn require_sender() {
     if !is_executable(&ctx().sender) {
-        die(
-            "The program that sends files is not installed. It comes with the Wi-Fi driver: omdrop install-driver",
-        );
+        die(format!(
+            "The program that sends files is not installed. It comes with the {}. {}",
+            radio_pkg(),
+            radio_update()
+        ));
     }
     if !awdl_link_local() {
         die(
@@ -327,20 +329,26 @@ pub fn cmd_send(args: &[OsString]) -> i32 {
         die("send: a recipient is one name or address, not several lines");
     }
     if !is_executable(&c.sender) {
-        die(
-            "The program that sends files is not installed. It comes with the Wi-Fi driver: omdrop install-driver",
-        );
+        die(format!(
+            "The program that sends files is not installed. It comes with the {}. {}",
+            radio_pkg(),
+            radio_update()
+        ));
     }
     // A driver older than 0.5.0 sends one file only; its usage line says so.
     if files.len() > 1 && !sender_help_has("[file ...]") {
-        die(
-            "Sending several files at once needs a newer Wi-Fi driver package. Update it with: omdrop install-driver",
-        );
+        die(format!(
+            "Sending several files at once needs a newer {}. {}",
+            radio_pkg(),
+            radio_update()
+        ));
     }
     if !urls.is_empty() && !sender_help_has("--url") {
-        die(
-            "Sending a link needs a newer Wi-Fi driver package. Update it with: omdrop install-driver",
-        );
+        die(format!(
+            "Sending a link needs a newer {}. {}",
+            radio_pkg(),
+            radio_update()
+        ));
     }
 
     let payload: Vec<String> = urls
@@ -893,9 +901,11 @@ pub fn cmd_peers(args: &[String]) -> i32 {
     }
     require_sender();
     if names && !sender_help_has("--names") {
-        die(
-            "Looking up peer names needs a newer Wi-Fi driver package. Update it with: omdrop install-driver",
-        );
+        die(format!(
+            "Looking up peer names needs a newer {}. {}",
+            radio_pkg(),
+            radio_update()
+        ));
     }
     let mut cmd = sender_cmd();
     cmd.arg("--list");

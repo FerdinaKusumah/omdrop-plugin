@@ -252,10 +252,11 @@ impl Ctx {
         ];
         // The invoking user, whose identity the advertisers publish.
         for var in ["PKEXEC_UID", "SUDO_UID"] {
-            if let Ok(v) = std::env::var(var) {
-                if v.len() <= 10 && is_uint(&v) {
-                    env.push((var.into(), v.into()));
-                }
+            if let Ok(v) = std::env::var(var)
+                && v.len() <= 10
+                && is_uint(&v)
+            {
+                env.push((var.into(), v.into()));
             }
         }
         if let Some(t) = &self.paths.test_root {

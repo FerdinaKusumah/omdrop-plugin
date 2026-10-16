@@ -138,13 +138,14 @@ fn parse_body(body: &[u8]) -> Option<Record> {
             .unwrap_or_default();
         if t == 16 && v.len() > 1 {
             rec.host = Some(name(v, 1).0);
-        } else if t == 2 && v.len() > 5 {
-            if let Some((n, val)) = service_response(v) {
-                let entry = rec.services.entry(n).or_default();
-                entry.ptr = val.ptr.or(entry.ptr.take());
-                entry.srv = val.srv.or(entry.srv.take());
-                entry.txt = val.txt.or(entry.txt.take());
-            }
+        } else if t == 2
+            && v.len() > 5
+            && let Some((n, val)) = service_response(v)
+        {
+            let entry = rec.services.entry(n).or_default();
+            entry.ptr = val.ptr.or(entry.ptr.take());
+            entry.srv = val.srv.or(entry.srv.take());
+            entry.txt = val.txt.or(entry.txt.take());
         }
         i += 3 + l;
     }
@@ -216,7 +217,7 @@ pub fn endpoints_from_af_log(path: &Path) -> std::io::Result<Vec<AfEndpoint>> {
 }
 
 fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

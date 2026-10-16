@@ -415,11 +415,11 @@ fn supervise_run(ctx: &mut Ctx, mut child: Child, name: &str, opts: Opts) -> Run
     let mut buf = [0u8; 8192];
 
     loop {
-        if status.is_none() {
-            if let Ok(Some(s)) = child.try_wait() {
-                status = Some(s);
-                exited_at = Some(Instant::now());
-            }
+        if status.is_none()
+            && let Ok(Some(s)) = child.try_wait()
+        {
+            status = Some(s);
+            exited_at = Some(Instant::now());
         }
         if status.is_none() && killed.is_none() {
             let why = if opts.cancellable && cancelled() {
@@ -434,11 +434,13 @@ fn supervise_run(ctx: &mut Ctx, mut child: Child, name: &str, opts: Opts) -> Run
                 killed = Some((Instant::now(), why));
             }
         }
-        if let Some((at, _)) = &killed {
-            if status.is_none() && kill_at.is_none() && at.elapsed() >= GRACE {
-                signal(-pgid, libc::SIGKILL);
-                kill_at = Some(Instant::now());
-            }
+        if let Some((at, _)) = &killed
+            && status.is_none()
+            && kill_at.is_none()
+            && at.elapsed() >= GRACE
+        {
+            signal(-pgid, libc::SIGKILL);
+            kill_at = Some(Instant::now());
         }
         if status.is_none() && kill_at.is_some_and(|t| t.elapsed() >= REAP) {
             unkillable = true;
@@ -477,29 +479,29 @@ fn supervise_run(ctx: &mut Ctx, mut child: Child, name: &str, opts: Opts) -> Run
                 p.fd == fd && p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
             })
         };
-        if let Some(p) = out_pipe.as_mut() {
-            if ready(p.as_raw_fd()) {
-                match read_some(p, &mut buf) {
-                    None => out_pipe = None,
-                    Some(k) => {
-                        let cap = opts.stdout.unwrap_or(0);
-                        let room = cap.saturating_sub(stdout.len());
-                        stdout.extend_from_slice(&buf[..k.min(room)]);
-                    }
+        if let Some(p) = out_pipe.as_mut()
+            && ready(p.as_raw_fd())
+        {
+            match read_some(p, &mut buf) {
+                None => out_pipe = None,
+                Some(k) => {
+                    let cap = opts.stdout.unwrap_or(0);
+                    let room = cap.saturating_sub(stdout.len());
+                    stdout.extend_from_slice(&buf[..k.min(room)]);
                 }
             }
         }
-        if let Some(p) = err_pipe.as_mut() {
-            if ready(p.as_raw_fd()) {
-                match read_some(p, &mut buf) {
-                    None => err_pipe = None,
-                    Some(k) => {
-                        for &b in &buf[..k] {
-                            if b == b'\n' {
-                                said |= flush_line(ctx, &mut line);
-                            } else if line.len() < LINE_MAX {
-                                line.push(b);
-                            }
+        if let Some(p) = err_pipe.as_mut()
+            && ready(p.as_raw_fd())
+        {
+            match read_some(p, &mut buf) {
+                None => err_pipe = None,
+                Some(k) => {
+                    for &b in &buf[..k] {
+                        if b == b'\n' {
+                            said |= flush_line(ctx, &mut line);
+                        } else if line.len() < LINE_MAX {
+                            line.push(b);
                         }
                     }
                 }

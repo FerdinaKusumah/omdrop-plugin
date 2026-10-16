@@ -148,10 +148,10 @@ fn noise(n: usize, seed: u64) -> Vec<u8> {
 fn wait_for(path: &Path, len: usize) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if let Ok(data) = std::fs::read(path) {
-            if data.len() == len {
-                return data;
-            }
+        if let Ok(data) = std::fs::read(path)
+            && data.len() == len
+        {
+            return data;
         }
         assert!(
             Instant::now() < deadline,

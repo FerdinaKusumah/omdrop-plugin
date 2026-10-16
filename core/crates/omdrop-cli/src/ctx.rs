@@ -191,10 +191,10 @@ fn self_exe() -> PathBuf {
 pub fn sibling_dirs(exe: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(dir) = exe.parent() {
-        if dir.file_name().is_some_and(|n| n == "bin") {
-            if let Some(prefix) = dir.parent() {
-                dirs.push(prefix.join(CORE_LIBEXEC));
-            }
+        if dir.file_name().is_some_and(|n| n == "bin")
+            && let Some(prefix) = dir.parent()
+        {
+            dirs.push(prefix.join(CORE_LIBEXEC));
         }
         dirs.push(dir.to_path_buf());
     }
@@ -262,12 +262,13 @@ fn find_discoverable(legacy: bool, proj: &Path) -> PathBuf {
 pub fn name_wait(raw: Option<&str>) -> u64 {
     let raw = raw.unwrap_or("120");
     let digits = raw.trim_start_matches('0');
-    if !digits.is_empty() && digits.len() <= 10 && digits.bytes().all(|b| b.is_ascii_digit()) {
-        if let Ok(n) = digits.parse::<u64>() {
-            if n <= 2_147_483_647 {
-                return n;
-            }
-        }
+    if !digits.is_empty()
+        && digits.len() <= 10
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && let Ok(n) = digits.parse::<u64>()
+        && n <= 2_147_483_647
+    {
+        return n;
     }
     120
 }

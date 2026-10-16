@@ -1070,3 +1070,39 @@ fn an_upload_may_start_later_than_the_idle_limit_after_an_accepted_ask() {
     assert_eq!(upload(&mut c, &dvzip(&[("slow.bin", b"slow")])), 200);
     assert_eq!(fx.files(), ["slow.bin"]);
 }
+
+#[test]
+fn upload_slots_are_capped_and_freed_on_drop() {
+    let counter = AtomicUsize::new(0);
+    let a = try_slot(&counter, 2).expect("first slot");
+    let b = try_slot(&counter, 2).expect("second slot");
+    assert!(try_slot(&counter, 2).is_none(), "a third upload must wait");
+    drop(a);
+    let c = try_slot(&counter, 2).expect("a freed slot is reusable");
+    drop((b, c));
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn racing_threads_never_hold_more_slots_than_the_cap() {
+    let counter = AtomicUsize::new(0);
+    let peak = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            s.spawn(|| {
+                for _ in 0..2000 {
+                    if let Some(slot) = try_slot(&counter, 2) {
+                        peak.fetch_max(counter.load(Ordering::SeqCst), Ordering::SeqCst);
+                        drop(slot);
+                    }
+                }
+            });
+        }
+    });
+    assert!(
+        peak.load(Ordering::SeqCst) <= 2,
+        "peak {}",
+        peak.load(Ordering::SeqCst)
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}

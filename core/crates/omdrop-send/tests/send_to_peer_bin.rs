@@ -10,7 +10,6 @@
 //! namespace; where this is unavailable the tests skip rather than touch the
 //! radio.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -57,9 +56,28 @@ impl Bed {
     }
 }
 
+/// Write an executable without this test process ever holding it open for
+/// writing: a fork made by a parallel test while we held it would inherit the
+/// descriptor until it execs, and running the file then fails with ETXTBSY.
+/// A child that writes it and exits holds the only write descriptor.
 fn script(path: &Path, body: &str) {
-    std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    use std::io::Write;
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(format!("#!/bin/sh\n{body}").as_bytes())
+        .unwrap();
+    drop(stdin);
+    assert!(
+        child.wait().unwrap().success(),
+        "writing {}",
+        path.display()
+    );
 }
 
 /// Whether a private network namespace can be made here.
@@ -92,11 +110,15 @@ fn bed(peers: &str) -> Option<Bed> {
     for d in ["lib", "bin", "home", "runtime"] {
         std::fs::create_dir_all(bed.path(d)).unwrap();
     }
-    std::fs::copy(
-        env!("CARGO_BIN_EXE_send-to-peer"),
-        bed.path("lib/send-to-peer"),
-    )
-    .unwrap();
+    // cp, not fs::copy, for the same reason as script().
+    assert!(
+        Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_send-to-peer"))
+            .arg(bed.path("lib/send-to-peer"))
+            .status()
+            .unwrap()
+            .success()
+    );
     // pkexec runs its argument as is; the helper prints the table.
     script(
         &bed.path("bin/pkexec"),

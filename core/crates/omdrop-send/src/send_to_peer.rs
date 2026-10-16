@@ -406,13 +406,13 @@ pub fn peer_names<E: Env + ?Sized>(
             // Newcomers only while we are still transmitting: once the wake
             // ends there is nothing to wake them with, and a lookup without
             // one should stay in seconds.
-            if let Some(rescan) = rescan.as_mut() {
-                if ready_by.is_some_and(|d| env.monotonic() < d) {
-                    for m in rescan() {
-                        if asked.insert(m.clone()) {
-                            ask(m);
-                            pending += 1;
-                        }
+            if let Some(rescan) = rescan.as_mut()
+                && ready_by.is_some_and(|d| env.monotonic() < d)
+            {
+                for m in rescan() {
+                    if asked.insert(m.clone()) {
+                        ask(m);
+                        pending += 1;
                     }
                 }
             }
@@ -784,22 +784,22 @@ fn find_mac_rssi(line: &str) -> Option<(String, Option<i64>)> {
     while let Some((i, mac)) = find_mac(line, from) {
         let rest = line.get(i + 17..).unwrap_or("");
         let after_ws = rest.trim_start();
-        if after_ws.len() < rest.len() {
-            if let Some(v) = after_ws.strip_prefix("rssi=") {
-                let v = v.trim_start();
-                if v.starts_with('?') {
-                    return Some((mac, None));
-                }
-                let neg = v.starts_with('-');
-                let digits: String = v
-                    .trim_start_matches('-')
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect();
-                if !digits.is_empty() && (!neg || v.len() > 1) {
-                    let n: i64 = digits.parse().unwrap_or(i64::MAX);
-                    return Some((mac, Some(if neg { -n } else { n })));
-                }
+        if after_ws.len() < rest.len()
+            && let Some(v) = after_ws.strip_prefix("rssi=")
+        {
+            let v = v.trim_start();
+            if v.starts_with('?') {
+                return Some((mac, None));
+            }
+            let neg = v.starts_with('-');
+            let digits: String = v
+                .trim_start_matches('-')
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            if !digits.is_empty() && (!neg || v.len() > 1) {
+                let n: i64 = digits.parse().unwrap_or(i64::MAX);
+                return Some((mac, Some(if neg { -n } else { n })));
             }
         }
         from = i + 1;
@@ -814,10 +814,10 @@ pub fn parse_neigh(text: &str) -> Vec<String> {
     while let Some(i) = rest.find("lladdr") {
         let after = rest.get(i + 6..).unwrap_or("");
         let trimmed = after.trim_start();
-        if trimmed.len() < after.len() {
-            if let Some((0, mac)) = find_mac(trimmed, 0) {
-                out.push(mac);
-            }
+        if trimmed.len() < after.len()
+            && let Some((0, mac)) = find_mac(trimmed, 0)
+        {
+            out.push(mac);
         }
         rest = after;
     }

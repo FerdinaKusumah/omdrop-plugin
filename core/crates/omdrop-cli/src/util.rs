@@ -445,10 +445,10 @@ pub fn random_u64() -> u64 {
 /// `${p/#$HOME/\~}`.
 pub fn tildify(p: &str) -> String {
     let home = home();
-    if !home.is_empty() {
-        if let Some(rest) = p.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
+    if !home.is_empty()
+        && let Some(rest) = p.strip_prefix(&home)
+    {
+        return format!("~{rest}");
     }
     p.to_string()
 }

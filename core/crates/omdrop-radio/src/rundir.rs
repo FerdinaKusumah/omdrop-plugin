@@ -312,10 +312,10 @@ impl RunDir {
     /// untrusted file in its place is removed and replaced.
     pub fn append(&self, name: &str) -> io::Result<File> {
         let flags = libc::O_WRONLY | libc::O_APPEND | libc::O_NONBLOCK;
-        if let Ok(f) = self.openat(name, flags | libc::O_CREAT, 0o644) {
-            if self.trusted(&f) {
-                return Ok(f);
-            }
+        if let Ok(f) = self.openat(name, flags | libc::O_CREAT, 0o644)
+            && self.trusted(&f)
+        {
+            return Ok(f);
         }
         if !self.fix {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));

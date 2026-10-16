@@ -9,6 +9,8 @@
 #   T/env.<hook>       the environment the hook saw
 #   T/mock/<hook>.rc   exit with this code instead of 0
 #   T/mock/<hook>.sleep  sleep this long first (cancellation, timeouts)
+#   T/mock/<hook>.hold   wait while this file exists (a test removes it to
+#                        let the hook go on: a pause with no timing in it)
 #   T/mock/up.stdout   up's stdout (the announce settings)
 #   T/mock/probe.json  probe's answer instead of the default
 #   T/mock/no-link-local  up brings awdl0 up without an IPv6 link-local
@@ -23,6 +25,7 @@ if [ -r "$T/mock/$hook.sleep" ]; then
   # A child of ours, so the TERM to the process group reaches it as well.
   sleep "$(cat "$T/mock/$hook.sleep")"
 fi
+while [ -e "$T/mock/$hook.hold" ]; do sleep 0.05; done
 net=$T/sys/class/net/awdl0
 
 case $hook in

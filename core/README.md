@@ -34,6 +34,8 @@ What changes for users, compared with the Python and bash programs:
 
 ## Build
 
+Needs Rust 1.88 or newer, the `rust-version` in `Cargo.toml`.
+
 ```bash
 cargo build --release --workspace
 ```

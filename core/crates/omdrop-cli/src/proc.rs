@@ -120,6 +120,81 @@ pub fn capture_ok<S: AsRef<OsStr>>(prog: impl AsRef<OsStr>, args: &[S]) -> Optio
         .then(|| crate::util::strip_trailing_newlines(&String::from_utf8_lossy(&out)).to_string())
 }
 
+pub enum Captured {
+    Done(i32, Vec<u8>),
+    /// The deadline passed first; the whole group was stopped.
+    TimedOut,
+    /// More than the limit came; the whole group was stopped.
+    TooLong,
+}
+
+/// `timeout LIMIT cmd 2>/dev/null` inside `$(...)`, but bounded end to end:
+/// CMD leads a process group of its own, and at the deadline the whole
+/// group goes, so a child still holding stdout open cannot keep us waiting.
+/// The output is capped too, since nothing here needs more than `max`
+/// bytes and a helper writing without end would otherwise fill memory
+/// before any deadline. `None`: no deadline, as `timeout 0` has none.
+pub fn capture_bounded(cmd: &mut Command, deadline: Option<Instant>, max: usize) -> Captured {
+    let Ok((read, write)) = pipe() else {
+        return Captured::Done(126, Vec::new());
+    };
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::from(write))
+        .stderr(Stdio::null());
+    let spawned = spawn_group(cmd);
+    // Our copy of the write end, so EOF comes when the group closes its own.
+    cmd.stdout(Stdio::null());
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Captured::Done(127, Vec::new()),
+        Err(_) => return Captured::Done(126, Vec::new()),
+    };
+    let mut file = std::fs::File::from(read);
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        if caught().is_some() {
+            cancelled(Some(&mut child));
+        }
+        let mut wait = Duration::from_millis(100);
+        if let Some(d) = deadline {
+            let now = Instant::now();
+            if now >= d {
+                stop_group(&mut child);
+                return Captured::TimedOut;
+            }
+            wait = wait.min(d - now);
+        }
+        let mut pfd = libc::pollfd {
+            fd: file.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = i32::try_from(wait.as_millis()).unwrap_or(100).max(1);
+        // SAFETY: one valid pollfd for the duration of the call.
+        if unsafe { libc::poll(&mut pfd, 1, ms) } <= 0 {
+            continue;
+        }
+        match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) if out.len() + n > max => {
+                stop_group(&mut child);
+                return Captured::TooLong;
+            }
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    match wait_cancellable(&mut child, deadline) {
+        Some(rc) => Captured::Done(rc, out),
+        None => {
+            stop_group(&mut child);
+            Captured::TimedOut
+        }
+    }
+}
+
 /// A pipe whose ends are not inherited by anything else we start.
 pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0i32; 2];

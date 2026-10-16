@@ -62,14 +62,14 @@ fn url_file_target(data: &[u8]) -> String {
         }
         if in_section {
             let lower = lead.to_ascii_lowercase();
-            if let Some(after) = lower.strip_prefix("url") {
-                if after.trim_start_matches([' ', '\t']).starts_with('=') {
-                    let eq = line.find('=').map_or(line.len(), |i| i + 1);
-                    return line[eq..]
-                        .trim_start_matches([' ', '\t'])
-                        .trim_end_matches([' ', '\t'])
-                        .to_string();
-                }
+            if let Some(after) = lower.strip_prefix("url")
+                && after.trim_start_matches([' ', '\t']).starts_with('=')
+            {
+                let eq = line.find('=').map_or(line.len(), |i| i + 1);
+                return line[eq..]
+                    .trim_start_matches([' ', '\t'])
+                    .trim_end_matches([' ', '\t'])
+                    .to_string();
             }
         }
     }
@@ -631,10 +631,8 @@ fn user_default(t: &str) -> String {
             in_defaults = line == "[Default Applications]";
             continue;
         }
-        if in_defaults {
-            if let Some(v) = line.strip_prefix(&prefix) {
-                return v.split(';').next().unwrap_or("").to_string();
-            }
+        if in_defaults && let Some(v) = line.strip_prefix(&prefix) {
+            return v.split(';').next().unwrap_or("").to_string();
         }
     }
     String::new()

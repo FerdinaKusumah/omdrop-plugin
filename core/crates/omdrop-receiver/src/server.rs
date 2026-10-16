@@ -261,13 +261,18 @@ impl Drop for Slot<'_> {
     }
 }
 
+/// Take one of `max` upload slots, or `None` when all are taken. A plain
+/// compare-exchange loop: `fetch_update` is deprecated in newer Rust (renamed
+/// `try_update`), and `try_update` does not exist in the versions we support.
 fn try_slot(counter: &AtomicUsize, max: usize) -> Option<Slot<'_>> {
-    counter
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-            (n < max).then_some(n + 1)
-        })
-        .ok()
-        .map(|_| Slot(counter))
+    let mut n = counter.load(Ordering::SeqCst);
+    while n < max {
+        match counter.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return Some(Slot(counter)),
+            Err(now) => n = now,
+        }
+    }
+    None
 }
 
 /// One upload's byte budget: a share of the download disk's current free

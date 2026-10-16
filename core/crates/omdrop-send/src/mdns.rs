@@ -138,10 +138,10 @@ impl Browser {
                     if inst.txt.is_none() {
                         qs.push((&inst.display, T_TXT));
                     }
-                    if let Some((_, target)) = &inst.srv {
-                        if !hosts.contains_key(&target.to_ascii_lowercase()) {
-                            qs.push((target, T_AAAA));
-                        }
+                    if let Some((_, target)) = &inst.srv
+                        && !hosts.contains_key(&target.to_ascii_lowercase())
+                    {
+                        qs.push((target, T_AAAA));
                     }
                     if !qs.is_empty() {
                         self.send_query(&qs);
@@ -159,10 +159,11 @@ impl Browser {
             match self.sock.recv_from(&mut buf) {
                 Ok((n, SocketAddr::V6(src))) => {
                     // Only link-local peers on this interface.
-                    if src.ip().is_unicast_link_local() && src.scope_id() == self.ifindex {
-                        if let Some(records) = buf.get(..n).and_then(parse_message) {
-                            absorb(records, &mut instances, &mut hosts);
-                        }
+                    if src.ip().is_unicast_link_local()
+                        && src.scope_id() == self.ifindex
+                        && let Some(records) = buf.get(..n).and_then(parse_message)
+                    {
+                        absorb(records, &mut instances, &mut hosts);
                     }
                 }
                 Ok(_) => {}
@@ -211,15 +212,16 @@ fn absorb(
 ) {
     // PTRs first so an answer carrying PTR, SRV and TXT together resolves at once.
     for rr in &records {
-        if let RData::Ptr(target) = &rr.data {
-            if rr.ttl > 0 && rr.name.eq_ignore_ascii_case(SERVICE) {
-                instances
-                    .entry(target.to_ascii_lowercase())
-                    .or_insert_with(|| Instance {
-                        display: target.clone(),
-                        ..Instance::default()
-                    });
-            }
+        if let RData::Ptr(target) = &rr.data
+            && rr.ttl > 0
+            && rr.name.eq_ignore_ascii_case(SERVICE)
+        {
+            instances
+                .entry(target.to_ascii_lowercase())
+                .or_insert_with(|| Instance {
+                    display: target.clone(),
+                    ..Instance::default()
+                });
         }
     }
     let mut seen_aaaa: HashSet<String> = HashSet::new();

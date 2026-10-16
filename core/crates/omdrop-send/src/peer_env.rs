@@ -221,13 +221,13 @@ fn terminate(child: &mut Child) {
 /// Terminate the running sender, if any (on a signal).
 pub fn stop_sender_child() {
     let pid = SENDER_PID.load(Ordering::SeqCst);
-    if let Ok(pid) = libc::pid_t::try_from(pid) {
-        if pid > 0 {
-            // SAFETY: kill(2) on our own child's pid. The pid is cleared the
-            // moment wait returns, so it names an unreaped child (or, in that
-            // instant, a zombie the kernel has not yet released).
-            unsafe { libc::kill(pid, libc::SIGTERM) };
-        }
+    if let Ok(pid) = libc::pid_t::try_from(pid)
+        && pid > 0
+    {
+        // SAFETY: kill(2) on our own child's pid. The pid is cleared the
+        // moment wait returns, so it names an unreaped child (or, in that
+        // instant, a zombie the kernel has not yet released).
+        unsafe { libc::kill(pid, libc::SIGTERM) };
     }
 }
 

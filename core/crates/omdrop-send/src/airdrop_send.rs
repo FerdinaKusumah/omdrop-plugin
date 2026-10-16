@@ -203,7 +203,7 @@ pub struct Options {
 fn hex_bytes(s: &str) -> Option<Vec<u8>> {
     // bytes.fromhex: whitespace between bytes is allowed.
     let digits: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return None;
     }
     (0..digits.len())
@@ -539,10 +539,10 @@ pub fn run(opts: &Options, sender: &Sender, log: &Logger) -> i32 {
         }
     }
 
-    if chosen.is_none() {
-        if let Some(path) = opts.af_log.as_deref().filter(|p| p.exists()) {
-            chosen = af_log_attempts(opts, sender, log, path);
-        }
+    if chosen.is_none()
+        && let Some(path) = opts.af_log.as_deref().filter(|p| p.exists())
+    {
+        chosen = af_log_attempts(opts, sender, log, path);
     }
 
     if chosen.is_none() {
@@ -768,11 +768,12 @@ fn af_log_attempts<'a>(
             t1.elapsed().as_secs_f64()
         ));
         let Some(n) = name else { continue };
-        if let Some(to) = opts.to.as_deref() {
-            if !to_is_id(to) && !to.contains(':') && !n.to_lowercase().contains(&to.to_lowercase())
-            {
-                continue;
-            }
+        if let Some(to) = opts.to.as_deref()
+            && !to_is_id(to)
+            && !to.contains(':')
+            && !n.to_lowercase().contains(&to.to_lowercase())
+        {
+            continue;
         }
         return Some(Chosen {
             ident: ep.id,
@@ -881,16 +882,17 @@ fn on_add<'a>(
         t1.elapsed().as_secs_f64()
     ));
     let name = name?;
-    if let Some(to) = opts.to.as_deref() {
-        if !to_is_id(to) && !name.to_lowercase().contains(&to.to_lowercase()) {
-            log.send(&format!(
-                "{} {ident} is {}, not --to {}; skipping",
-                log.t(),
-                str_repr(&name),
-                str_repr(to)
-            ));
-            return None;
-        }
+    if let Some(to) = opts.to.as_deref()
+        && !to_is_id(to)
+        && !name.to_lowercase().contains(&to.to_lowercase())
+    {
+        log.send(&format!(
+            "{} {ident} is {}, not --to {}; skipping",
+            log.t(),
+            str_repr(&name),
+            str_repr(to)
+        ));
+        return None;
     }
     // The browse deadline bounded the Discover; the transfer gets its own.
     let client = Client::new(sender, client.endpoint.clone(), log);

@@ -320,7 +320,7 @@ process (through `pids`) or write a file anywhere (through a symlink).
 |`rx_proven`, `rx_base`|core|The receive proof: `awdl0`'s `rx_packets` at window start, and whether it has moved since.|
 |`supervisor`|core|`<pid> <start time>` of the supervisor (start time: field 22 of `/proc/<pid>/stat`).|
 |`pids`|core|One `<pid> <tag> <start time>` line per window child, each the leader of its own process group.|
-|`supervisor.token`, `start.lock`, `pids.dying.*`, `hook.pgid`|core|Supervisor lifecycle. The token is mode 0600.|
+|`supervisor.token`, `start.lock`, `window.lock`, `pids.dying.*`, `hook.pgid`|core|Supervisor lifecycle. The token is mode 0600.|
 |`announce`|core|`up`'s announce settings, validated.|
 |`mdns.log`, `ble.log`, `peers.log`|core|Children's output.|
 |`peerop.degraded`|backend|Present while registering a peer with the radio fails. `status` then reports `peer_op` `degraded`, and reason `peer_op_failed` instead of `ok`.|
@@ -350,6 +350,13 @@ tested once, in Rust, for every backend:
   environment, which pkexec strips from a direct call.
 - One start at a time (`flock` on `start.lock`, else exit 5). A second
   `start` during a live window moves its deadline (exit 5).
+- The supervisor decides to end its window (expiry, `stop`, the radio lost)
+  under `flock` on `window.lock`, and removes `until` before anything else;
+  on expiry it re-reads `until` under the lock, so a deadline a second
+  `start` moved keeps the window open. A `start` reads and moves the deadline
+  under the same lock. One that finds the supervisor alive but `until` gone
+  never reports an extension: it waits for that supervisor to exit (at most
+  90 s, else exit 3) and then opens a new window.
 - One supervisor per window, in its own session. It is alive only if the
   process at the recorded pid has the recorded start time, runs as root, and
   has argv `omdrop-radio __supervise ...`. That argv is matched by position:

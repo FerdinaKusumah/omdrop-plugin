@@ -6,7 +6,6 @@
 //! session: HOME, XDG_* and the runtime directory are temporary, and every
 //! program that could reach the desktop is a stub that only logs.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -35,9 +34,31 @@ elif cmd == "ensure-self-signed":
     sys.exit(1)
 "#;
 
+/// Write an executable without this test process ever holding it open for
+/// writing. Tests run in parallel and fork; a fork made while we held the
+/// file open inherits the descriptor until it execs, and running the file in
+/// that moment fails with ETXTBSY ("Text file busy"): `omdrop` then took its
+/// fallback at once and a timing test saw 0 s. A child that writes it and
+/// exits holds the only write descriptor, and it never forks.
 fn write_exec(path: &Path, body: &str) {
-    std::fs::write(path, body).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    use std::io::Write;
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(body.as_bytes())
+        .unwrap();
+    assert!(
+        child.wait().unwrap().success(),
+        "writing {}",
+        path.display()
+    );
 }
 
 impl Fixture {
@@ -665,4 +686,468 @@ fn a_heic_decode_that_hangs_is_cut_off_and_the_path_is_copied() {
     assert!(ev.contains("uwsm-app -- wl-copy\n"), "{ev}");
     assert_eq!(clip, photo.as_os_str().as_encoded_bytes());
     assert_eq!(clip_dirs_left(&f), Vec::<PathBuf>::new());
+}
+
+// ------------------------------------------------------------ radio backends
+//
+// The plugin's tests/test_radio_backend.py: a helper may answer `probe
+// --json` (docs/radio-backend.md); when it does, the hardware and install
+// checks are the backend's, so a machine without Apple's Broadcom Wi-Fi is
+// not refused out of hand. A helper that does not answer gets the Broadcom
+// checks exactly as before.
+
+const BROADCOM_SAYS: &str = "no Apple Broadcom Wi-Fi";
+
+/// The plugin tests' `helper()`: an omdrop-discoverable that answers probe
+/// with PROBE, or, given `None`, behaves like omdrop-awdl's: usage and exit
+/// 2 for a subcommand it does not know.
+fn backend_helper(probe: Option<serde_json::Value>) -> String {
+    match probe {
+        None => "#!/bin/sh\necho \"usage: omdrop-discoverable start|stop|status\" >&2\nexit 2\n"
+            .to_string(),
+        Some(p) => format!("#!/bin/sh\n[ \"$1\" = probe ] || exit 2\ncat <<'EOF'\n{p}\nEOF\n"),
+    }
+}
+
+/// A helper whose probe never answers. The child sleep keeps stdout open
+/// after the shell is killed, which is what a hung helper usually looks like.
+const HUNG: &str = "#!/bin/sh\n[ \"$1\" = probe ] || exit 2\nsleep 30\necho \"{}\"\n";
+
+fn owl(missing: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "backend": "owl", "version": "0.1.0", "hardware": true, "contract": "0.7.0",
+        "missing": missing,
+    })
+}
+
+struct Radio {
+    f: Fixture,
+    env: Vec<(String, String)>,
+}
+
+impl Radio {
+    /// A machine with no PCI network hardware at all: not a Mac. The
+    /// receiver's service is installed, nothing is active (ufw included),
+    /// no driver package is installed, and the install terminal only shows
+    /// what it was given.
+    fn new() -> Self {
+        let f = Fixture::new();
+        let sys = f.root.join("sys");
+        std::fs::create_dir_all(sys.join("bus/pci/devices")).unwrap();
+        write_exec(
+            &f.root.join("bin/systemctl"),
+            "#!/bin/sh\ncase \"$*\" in *is-active*) exit 3 ;; esac\nexit 0\n",
+        );
+        write_exec(&f.root.join("bin/pacman"), "#!/bin/sh\nexit 1\n");
+        write_exec(
+            &f.root
+                .join("bin/omarchy-launch-floating-terminal-with-presentation"),
+            "#!/bin/sh\nprintf '%s\\n' \"$1\"\n",
+        );
+        let env = vec![("OMDROP_SYSFS".to_string(), sys.display().to_string())];
+        Self { f, env }
+    }
+
+    fn helper(&self, body: &str) {
+        write_exec(&self.f.helper, body);
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        self.env.push((k.to_string(), v.to_string()));
+    }
+
+    /// A libarchive without the API the receiver calls, ahead of the real
+    /// one, is what "not installed" looks like to the Python receiver's check.
+    fn without_receiver_library(&mut self) {
+        let fake = self.f.root.join("py/libarchive");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(fake.join("__init__.py"), "").unwrap();
+        let py = self.f.root.join("py").display().to_string();
+        self.set("PYTHONPATH", &py);
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        let env: Vec<(&str, &str)> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        self.f.run(args, &env).0
+    }
+
+    fn doctor(&self) -> serde_json::Value {
+        let out = self.run(&["doctor", "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    fn ids(&self) -> Vec<String> {
+        self.doctor()["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+}
+
+fn text(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
+/// What the Python receiver's library check sees on this machine.
+fn receiver_libs_here() -> bool {
+    Command::new("python3")
+        .args(["-c", "from libarchive import stream_reader"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+        && Path::new("/usr/lib/libkeyutils.so.1").exists()
+}
+
+#[test]
+fn a_probing_backend_owns_the_hardware_check() {
+    let r = Radio::new();
+    r.helper(&backend_helper(Some(owl(serde_json::json!([
+        {"id": "radio", "say": "Wi-Fi is not connected."}
+    ])))));
+    let missing = r.doctor()["missing"].clone();
+    assert_eq!(
+        missing[0],
+        serde_json::json!({"id": "radio", "say": "Wi-Fi is not connected."})
+    );
+    assert!(!missing.to_string().contains(BROADCOM_SAYS), "{missing}");
+}
+
+#[test]
+fn a_ready_backend_leaves_only_the_plugins_own_findings() {
+    let r = Radio::new();
+    r.helper(&backend_helper(Some(owl(serde_json::json!([])))));
+    let doctor = r.doctor();
+    let ids: Vec<&str> = doctor["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.iter().all(|i| *i == "library"), "{doctor}");
+    if receiver_libs_here() {
+        assert_eq!(doctor, serde_json::json!({"ready": true, "missing": []}));
+        let out = r.run(&["doctor"]);
+        assert!(
+            text(&out.stdout).starts_with("Ready to receive.\n"),
+            "{}",
+            text(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn hardware_the_backend_cannot_drive_is_reported_alone() {
+    let mut r = Radio::new();
+    r.helper(&backend_helper(Some(serde_json::json!({
+        "backend": "owl", "version": "0.1.0", "hardware": false,
+        "missing": [{"id": "hardware", "say": "No supported Wi-Fi card."},
+                    {"id": "radio", "say": "never shown"}]
+    }))));
+    r.without_receiver_library();
+    assert_eq!(
+        r.doctor()["missing"],
+        serde_json::json!([{"id": "hardware", "say": "No supported Wi-Fi card."}])
+    );
+    // One that names no hardware item gets the plugin's sentence for it.
+    r.helper(&backend_helper(Some(
+        serde_json::json!({"backend": "owl", "hardware": false}),
+    )));
+    assert_eq!(
+        r.doctor()["missing"],
+        serde_json::json!([{"id": "hardware", "say": "This computer's Wi-Fi is not one the installed radio backend (owl) can drive."}])
+    );
+}
+
+#[test]
+fn a_helper_without_probe_gets_the_broadcom_checks() {
+    let r = Radio::new();
+    r.helper(&backend_helper(None));
+    let doctor = r.doctor();
+    assert_eq!(r.ids(), ["hardware"]);
+    assert_eq!(
+        doctor["missing"][0]["say"],
+        "This computer has no Apple Broadcom Wi-Fi, which Omdrop's own driver needs: it runs only on Apple Silicon Macs, not in a virtual machine. Other Wi-Fi cards need a different radio backend (docs/radio-backend.md)."
+    );
+    // On a Mac the hardware item goes and the driver's own checks remain.
+    let dev = r.f.root.join("sys/bus/pci/devices/0000:01:00.0");
+    std::fs::create_dir_all(&dev).unwrap();
+    std::fs::write(dev.join("vendor"), "0x14e4\n").unwrap();
+    std::fs::write(dev.join("class"), "0x028000\n").unwrap();
+    let ids = r.ids();
+    assert!(
+        ids.iter()
+            .all(|i| ["library", "radio", "service"].contains(&i.as_str())),
+        "{ids:?}"
+    );
+}
+
+#[test]
+fn an_answer_without_a_backend_name_is_not_a_probe() {
+    let r = Radio::new();
+    for probe in [
+        serde_json::json!({"visible": true}),
+        serde_json::json!({"backend": "  "}),
+        serde_json::json!(["owl"]),
+    ] {
+        r.helper(&backend_helper(Some(probe.clone())));
+        let doctor = r.doctor();
+        assert!(
+            doctor["missing"][0]["say"]
+                .as_str()
+                .unwrap()
+                .contains(BROADCOM_SAYS),
+            "{probe}: {doctor}"
+        );
+    }
+    // Nor is a probe that fails, whatever it printed.
+    r.helper("#!/bin/sh\necho '{\"backend\": \"owl\"}'\nexit 1\n");
+    assert_eq!(r.ids(), ["hardware"]);
+}
+
+#[test]
+fn a_backend_below_the_minimum_contract_is_a_blocker_that_names_it() {
+    let r = Radio::new();
+    for contract in [Some("0.1.0"), None] {
+        let mut probe = owl(serde_json::json!([]));
+        match contract {
+            Some(c) => probe["contract"] = c.into(),
+            None => {
+                probe.as_object_mut().unwrap().remove("contract");
+            }
+        }
+        r.helper(&backend_helper(Some(probe)));
+        let first = r.doctor()["missing"][0].clone();
+        assert_eq!(first["id"], "backend", "{contract:?}");
+        assert_eq!(
+            first["say"],
+            format!(
+                "The installed radio backend (owl) follows helper contract {}, older than the 0.7.0 this version of Omdrop needs. Update its package.",
+                contract.unwrap_or("none")
+            )
+        );
+    }
+}
+
+#[test]
+fn a_backend_cannot_claim_the_ids_the_panel_acts_on() {
+    let r = Radio::new();
+    let mut probe = owl(serde_json::json!([
+        {"id": "driver", "say": "The OWL daemon\n  is missing."},
+        {"id": "radio", "say": "Wi-Fi is not connected."},
+        {"id": "", "say": "no id"},
+        {"id": "x"},
+        "not an item"
+    ]));
+    probe["contract"] = "0.8.1".into();
+    r.helper(&backend_helper(Some(probe)));
+    let doctor = r.doctor();
+    let ids = r.ids();
+    assert_eq!(ids[..2], ["backend-driver", "radio"], "{doctor}");
+    assert!(!ids.contains(&"driver".to_string()), "{ids:?}");
+    assert!(ids[2..].iter().all(|i| i == "library"), "{ids:?}");
+    assert_eq!(doctor["missing"][0]["say"], "The OWL daemon is missing.");
+}
+
+#[test]
+fn a_probe_that_hangs_is_the_backends_problem_not_a_missing_mac() {
+    let mut r = Radio::new();
+    r.helper(HUNG);
+    r.set("OMDROP_PROBE_TIMEOUT", "1");
+    let start = std::time::Instant::now();
+    let missing = r.doctor()["missing"].clone();
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(missing[0]["id"], "backend");
+    let say = missing[0]["say"].as_str().unwrap();
+    assert!(
+        say.starts_with("The radio backend did not answer when asked what it needs (")
+            && say.ends_with(
+                "omdrop-discoverable probe, 1 seconds). Reinstalling or updating its package may help."
+            ),
+        "{say}"
+    );
+    assert!(!missing.to_string().contains(BROADCOM_SAYS), "{missing}");
+}
+
+#[test]
+fn a_probe_that_hangs_offers_no_install_button() {
+    // install-driver refuses for a backend that does not answer, so the
+    // library item, which brings up the panel's button, stays out.
+    let mut r = Radio::new();
+    r.helper("#!/bin/sh\n[ \"$1\" = probe ] || exit 2\nsleep 30\n");
+    r.set("OMDROP_PROBE_TIMEOUT", "1");
+    r.without_receiver_library();
+    assert_eq!(r.ids(), ["backend"]);
+}
+
+#[test]
+fn install_with_a_probing_backend_never_builds_the_broadcom_driver() {
+    let mut r = Radio::new();
+    r.helper(&backend_helper(Some(owl(serde_json::json!([])))));
+    r.without_receiver_library();
+    let out = r.run(&["install-driver"]);
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
+    assert!(
+        stdout.starts_with("Opening a terminal to install what the receiver needs.\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("pacman -S --needed --asdeps python-libarchive-c keyutils"),
+        "{stdout}"
+    );
+    for broadcom in ["brcmfmac-awdl-dkms", "makepkg", "omdrop-awdl"] {
+        assert!(!stdout.contains(broadcom), "{broadcom}: {stdout}");
+    }
+}
+
+#[test]
+fn install_with_a_probing_backend_and_nothing_missing_does_nothing() {
+    let r = Radio::new();
+    r.helper(&backend_helper(Some(owl(serde_json::json!([])))));
+    let out = r.run(&["install-driver"]);
+    if !receiver_libs_here() {
+        eprintln!("this machine lacks the receiver's packages; covered above");
+        return;
+    }
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        text(&out.stdout),
+        "The receiver's packages are installed and the radio comes from owl 0.1.0. Nothing to do.\n"
+    );
+}
+
+#[test]
+fn install_for_a_backend_below_the_contract_still_installs_the_receiver() {
+    let mut r = Radio::new();
+    let mut probe = owl(serde_json::json!([]));
+    probe["contract"] = "0.6.0".into();
+    r.helper(&backend_helper(Some(probe)));
+    r.without_receiver_library();
+    let out = r.run(&["install-driver"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        text(&out.stderr),
+        "The installed radio backend (owl) follows helper contract 0.6.0, older than the 0.7.0 this version of Omdrop needs. Update its package.\n"
+    );
+    assert!(text(&out.stdout).contains("--asdeps python-libarchive-c keyutils"));
+}
+
+#[test]
+fn install_refuses_when_the_probe_hangs() {
+    let mut r = Radio::new();
+    r.helper("#!/bin/sh\n[ \"$1\" = probe ] || exit 2\nsleep 30\n");
+    r.set("OMDROP_PROBE_TIMEOUT", "1");
+    let out = r.run(&["install-driver"]);
+    assert_ne!(out.status.code(), Some(0));
+    assert!(
+        text(&out.stderr).contains("did not answer"),
+        "{}",
+        text(&out.stderr)
+    );
+    let stdout = text(&out.stdout);
+    for broadcom in ["brcmfmac-awdl-dkms", "makepkg", "omdrop-awdl"] {
+        assert!(!stdout.contains(broadcom), "{broadcom}: {stdout}");
+    }
+}
+
+#[test]
+fn install_without_a_probe_still_refuses_a_machine_with_no_broadcom() {
+    let r = Radio::new();
+    r.helper(&backend_helper(None));
+    let out = r.run(&["install-driver"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains(BROADCOM_SAYS),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// The identity commands log what reached them.
+fn logging_identity(f: &Fixture) {
+    std::fs::write(
+        f.root.join("plugins/netmojo.omdrop/bin/identity.py"),
+        "import os, sys\nwith open(os.environ['CAPTURE'], 'a') as f:\n    f.write('identity.py ' + ' '.join(sys.argv[1:]) + '\\n')\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_1password_identity_follows_the_backends_contract_not_the_driver_package() {
+    let r = Radio::new();
+    logging_identity(&r.f);
+    // No brcmfmac-awdl-dkms is installed (pacman answers nothing).
+    r.helper(&backend_helper(Some(owl(serde_json::json!([])))));
+    let out = r.run(&["identity", "1password", "import"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let events = std::fs::read_to_string(&r.f.capture).unwrap();
+    assert!(events.contains("identity.py import\n"), "{events}");
+
+    let mut probe = owl(serde_json::json!([]));
+    probe["contract"] = "0.6.9".into();
+    r.helper(&backend_helper(Some(probe)));
+    let out = r.run(&["identity", "1password", "use", "item"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        text(&out.stderr),
+        "Keeping the identity in 1Password needs a radio backend that follows contract 0.7.0 or newer (owl follows 0.6.9).\n"
+    );
+    let events = std::fs::read_to_string(&r.f.capture).unwrap();
+    assert!(!events.contains("identity.py use"), "{events}");
+}
+
+#[test]
+fn without_a_probe_the_1password_identity_still_needs_the_driver_package() {
+    let r = Radio::new();
+    logging_identity(&r.f);
+    r.helper(&backend_helper(None));
+    let out = r.run(&["identity", "1password", "import"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        text(&out.stderr),
+        "Keeping the identity in 1Password needs driver 0.7.0 or newer (installed: none). Update it with: omdrop install-driver\n"
+    );
+}
+
+#[test]
+fn the_1password_identity_waits_for_a_backend_that_answers() {
+    let mut r = Radio::new();
+    r.helper(HUNG);
+    r.set("OMDROP_PROBE_TIMEOUT", "1");
+    let out = r.run(&["identity", "1password", "import"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("did not answer"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn a_missing_sender_names_the_backend_not_install_driver() {
+    let r = Radio::new();
+    let mut probe = owl(serde_json::json!([]));
+    probe["contract"] = "0.8.1".into();
+    r.helper(&backend_helper(Some(probe)));
+    let photo = r.f.root.join("photo.jpg");
+    std::fs::write(&photo, "x").unwrap();
+    let out = r.run(&["send", photo.to_str().unwrap()]);
+    assert_ne!(out.status.code(), Some(0));
+    assert_eq!(
+        text(&out.stderr),
+        "The program that sends files is not installed. It comes with the radio backend. Update the package that provides it (owl): omdrop install-driver leaves it alone.\n"
+    );
+
+    r.helper(&backend_helper(None));
+    let out = r.run(&["send", photo.to_str().unwrap()]);
+    assert_eq!(
+        text(&out.stderr),
+        "The program that sends files is not installed. It comes with the Wi-Fi driver package. Update it with: omdrop install-driver\n"
+    );
 }

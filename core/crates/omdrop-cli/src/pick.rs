@@ -114,12 +114,13 @@ pub fn file_uri_path(uri: &str) -> Option<PathBuf> {
     let mut i = 0;
     while i < raw.len() {
         let hex = |b: u8| (b as char).to_digit(16);
-        if raw[i] == b'%' && i + 2 < raw.len() {
-            if let (Some(h), Some(l)) = (hex(raw[i + 1]), hex(raw[i + 2])) {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-                continue;
-            }
+        if raw[i] == b'%'
+            && i + 2 < raw.len()
+            && let (Some(h), Some(l)) = (hex(raw[i + 1]), hex(raw[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+            continue;
         }
         out.push(raw[i]);
         i += 1;

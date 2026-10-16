@@ -32,6 +32,14 @@ const TICK_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long teardown waits for killed children before leaving them be.
 const REAP: Duration = Duration::from_secs(5);
+/// How long a `start` or a supervisor waits for `window.lock`. Its holders
+/// only read and write state files under it.
+const WINDOW_LOCK_WAIT: Duration = Duration::from_secs(10);
+/// How long a `start` waits for a supervisor that is ending its window. Its
+/// teardown is bounded at about 75 s: a second between TERM and KILL for its
+/// children, REAP for them, then `down` (DOWN_TIMEOUT, plus the TERM grace,
+/// KILL wait and pipe drain proc::hook allows).
+const CLOSING_WAIT: Duration = Duration::from_secs(90);
 
 pub fn need_root(ctx: &Ctx, args: &[&str]) -> Result<(), Exit> {
     if ctx.is_privileged() {
@@ -244,6 +252,74 @@ fn supervisor_alive(ctx: &Ctx) -> bool {
     proc::start_time(pid) == Some(start) && is_our_supervisor(ctx, pid)
 }
 
+/// The recorded supervisor as a handle, while it is alive and ours (as
+/// supervisor_alive judges it), so waiting for it never trusts a pid twice.
+fn recorded_supervisor(ctx: &Ctx) -> Option<Pidfd> {
+    let (pid, start) = ctx
+        .state("supervisor")
+        .as_deref()
+        .and_then(parse_pid_start)?;
+    let (exe, owner) = (ctx.self_exe.clone(), ctx.trusted_owner());
+    Pidfd::open(pid, move |p| {
+        proc::start_time(p) == Some(start)
+            && proc::is_invocation(p, &exe, "__supervise")
+            && proc::owned_by(p, owner)
+            && proc::running(p)
+    })
+}
+
+/// `until` is a deadline still ahead, or 0 (until stopped).
+fn until_live(ctx: &Ctx) -> bool {
+    ctx.state("until")
+        .filter(|d| is_uint(d))
+        .and_then(|d| d.parse::<u64>().ok())
+        .is_some_and(|d| d == 0 || now() < d)
+}
+
+/// `window.lock`, held by a `start` while it looks at a window and extends
+/// it, and by the supervisor while it decides to end one (end_window). It is
+/// opened O_CLOEXEC, so no hook or child ever holds it.
+fn window_lock(ctx: &Ctx) -> Result<std::fs::File, String> {
+    let f = ctx
+        .rd
+        .as_ref()
+        .ok_or("the run directory is not open")?
+        .append("window.lock")
+        .map_err(|e| format!("cannot open the window lock: {e}"))?;
+    let end = Instant::now() + WINDOW_LOCK_WAIT;
+    // SAFETY: flock on a descriptor we own; released when `f` closes.
+    while unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let e = std::io::Error::last_os_error();
+        if !matches!(e.raw_os_error(), Some(libc::EWOULDBLOCK | libc::EINTR)) {
+            return Err(format!("cannot take the window lock: {e}"));
+        }
+        if Instant::now() >= end {
+            return Err(format!(
+                "the window lock has been held for over {} s",
+                WINDOW_LOCK_WAIT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(f)
+}
+
+/// The supervisor's decision to end its window, made under `window.lock`:
+/// `until` goes first, so every `start` from then on finds the window closing
+/// and waits for this supervisor to exit. On expiry `until` is read again
+/// under the lock, and a deadline a `start` moved meanwhile keeps the window
+/// open (returns false).
+fn end_window(ctx: &mut Ctx, expiry: bool) -> bool {
+    let _window = window_lock(ctx)
+        .map_err(|e| ctx.log(&format!("{e}; ending the window without it")))
+        .ok();
+    if expiry && until_live(ctx) {
+        return false;
+    }
+    ctx.unset("until");
+    true
+}
+
 /// Live supervisors of omdrop-awdl 0.9.x's omdrop-discoverable. It shares the
 /// run directory, so its window is the window: status reports it, start does
 /// not open a second one over it, and stop ends it. Only the one 0.9.x
@@ -348,11 +424,11 @@ fn kill_children(ctx: &mut Ctx) {
     };
     let mut targets = Vec::new();
     for r in &list {
-        if let Some(target) = still_ours(ctx, r) {
-            if proc::signal(target, libc::SIGTERM) {
-                ctx.log(&format!("stopped {} (pid {})", r.tag, r.pid));
-                targets.push((r, target));
-            }
+        if let Some(target) = still_ours(ctx, r)
+            && proc::signal(target, libc::SIGTERM)
+        {
+            ctx.log(&format!("stopped {} (pid {})", r.tag, r.pid));
+            targets.push((r, target));
         }
     }
     if !targets.is_empty() {
@@ -631,22 +707,50 @@ pub fn start(ctx: &mut Ctx, args: &[String]) -> Res {
         ctx.log("AirDrop is already discoverable through the older omdrop-discoverable helper. Turn it off before turning it on again.");
         return Ok(5);
     }
-    if supervisor_alive(ctx) {
-        // A live supervisor re-reads `until` every interval, so rewriting it
-        // is how a second press moves the deadline, including to 0.
-        if secs_n > 0 {
-            let until = now() + secs_n;
-            ctx.set("until", &format!("{until}\n"));
-            ctx.log(&format!(
-                "already discoverable; window extended to {}",
-                clock(until)
-            ));
-        } else {
-            ctx.set("until", "0");
-            ctx.log("already discoverable; window now runs until turned off");
+    // The supervisor ends its window under `window.lock`, removing `until`
+    // first (end_window). Under the same lock, a deadline written here is one
+    // it will read, and a live supervisor without one is closing: wait for it
+    // and open a new window, never report an extension it is about to undo.
+    let closing = {
+        let _window = window_lock(ctx).map_err(|e| exit(3, e))?;
+        match recorded_supervisor(ctx) {
+            Some(sup) if !ctx.state("until").is_some_and(|d| is_uint(&d)) => Some(sup),
+            Some(_) => {
+                // A live supervisor re-reads `until` every interval, so
+                // rewriting it is how a second press moves the deadline,
+                // including to 0.
+                if secs_n > 0 {
+                    let until = now() + secs_n;
+                    ctx.set("until", &format!("{until}\n"));
+                    ctx.log(&format!(
+                        "already discoverable; window extended to {}",
+                        clock(until)
+                    ));
+                } else {
+                    ctx.set("until", "0");
+                    ctx.log("already discoverable; window now runs until turned off");
+                }
+                ctx.set("reason", "ok");
+                return Ok(5);
+            }
+            None => None,
         }
-        ctx.set("reason", "ok");
-        return Ok(5);
+    };
+    if let Some(sup) = closing {
+        ctx.log("the window is closing; opening a new one once it has closed");
+        let end = Instant::now() + CLOSING_WAIT;
+        while !sup.exited() {
+            if Instant::now() >= end {
+                return Err(exit(
+                    3,
+                    "AirDrop's previous window is still closing. Try again in a moment.",
+                ));
+            }
+            if !proc::sleep(Duration::from_millis(50)) {
+                ctx.log("start cancelled while the previous window was closing");
+                return Ok(3);
+            }
+        }
     }
     // A dead supervisor may still have left children (SIGKILL, crash), and
     // the hook it was running.
@@ -923,20 +1027,20 @@ fn supervise(ctx: &mut Ctx, secs: u64) -> Res {
             children.push((tag.to_string(), c));
         }
     };
-    if announce.mdns {
-        if let Some(adv) = &adv {
-            let args = [
-                "mdns",
-                "--iface",
-                IFACE,
-                "--port",
-                RECEIVER_PORT,
-                "--flags",
-                ADV_FLAGS,
-            ]
-            .map(String::from);
-            keep("mdns", spawn(ctx, "mdns", adv, &args));
-        }
+    if announce.mdns
+        && let Some(adv) = &adv
+    {
+        let args = [
+            "mdns",
+            "--iface",
+            IFACE,
+            "--port",
+            RECEIVER_PORT,
+            "--flags",
+            ADV_FLAGS,
+        ]
+        .map(String::from);
+        keep("mdns", spawn(ctx, "mdns", adv, &args));
     }
     // Peer registration is what makes our SYN-ACKs leave the radio: unicast to
     // a MAC with no firmware peer entry completes FW_TOSSED (074311Z).
@@ -965,12 +1069,7 @@ fn supervise(ctx: &mut Ctx, secs: u64) -> Res {
         if proc::cancelled() {
             break End::Stopped;
         }
-        let live = ctx
-            .state("until")
-            .filter(|d| is_uint(d))
-            .and_then(|d| d.parse::<u64>().ok())
-            .is_some_and(|d| d == 0 || now() < d);
-        if !live {
+        if !until_live(ctx) && end_window(ctx, true) {
             break End::Expired;
         }
         seq = seq.saturating_add(1);
@@ -1027,6 +1126,10 @@ fn supervise(ctx: &mut Ctx, secs: u64) -> Res {
             break End::Stopped;
         }
     };
+    if !matches!(end, End::Expired) {
+        // Stopped, or the radio is gone: the window ends whatever `until` says.
+        end_window(ctx, false);
+    }
     let (reason, why) = match end {
         End::Stopped => ("stopped", None),
         End::Expired => {
@@ -1052,7 +1155,6 @@ fn supervise(ctx: &mut Ctx, secs: u64) -> Res {
         reap(ctx, &tag, c, reap_until);
     }
     ctx.set("reason", reason);
-    ctx.unset("until");
     // `stop` runs `down` itself once every supervisor is gone.
     if let Some(why) = why {
         down(ctx, why, true);

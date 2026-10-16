@@ -34,3 +34,28 @@ jobs:
           useradd --create-home tester
           chown -R tester "$GITHUB_WORKSPACE"
           su tester -c "cargo test --locked --workspace && cargo clippy --locked --workspace --all-targets -- -D warnings"
+
+  msrv:
+    # The oldest Rust that core/Cargo.toml's rust-version claims must build
+    # it. A check, not the tests: those run above on the newest Rust.
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - name: Install dependencies
+        working-directory: /
+        # gcc: ring's build script compiles C, and rustup, unlike Arch's
+        # rust package, does not pull it in.
+        run: pacman -Syu --noconfirm --needed git rustup gcc
+      - uses: actions/checkout@v7
+      - name: Install the declared minimum toolchain
+        # Read from the manifest, so raising rust-version moves the check.
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          test -n "$msrv"
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+          rustup toolchain install "$msrv" --profile minimal
+      - name: Check at the minimum
+        run: cargo +"$MSRV" check --locked --workspace --all-targets

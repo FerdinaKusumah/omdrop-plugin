@@ -139,10 +139,10 @@ pub(crate) fn verify_record_with(record: &[u8], root_pem: &[u8]) -> Option<Recor
 fn account_from_subject(subject: &str) -> String {
     let mut cn = "";
     for line in subject.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == "commonName" {
-                cn = value.trim();
-            }
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "commonName"
+        {
+            cn = value.trim();
         }
     }
     cn.strip_prefix(CN_PREFIX).unwrap_or("").to_owned()

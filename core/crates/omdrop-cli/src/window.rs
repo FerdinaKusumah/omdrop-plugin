@@ -606,12 +606,10 @@ pub fn cmd_off(args: &[String]) -> i32 {
     require_unit();
     // A person asking for off while a send is running gets told, not
     // obeyed. The timers that close a window pass --force: nobody is there.
-    if !force {
-        if let Some(to) = sending_to(&sends_dir()).into_iter().next() {
-            die(format!(
-                "Still sending to {to}. Turning Omdrop off now would cut the transfer off. Cancel the send first, or turn it off anyway with: omdrop off --force"
-            ));
-        }
+    if !force && let Some(to) = sending_to(&sends_dir()).into_iter().next() {
+        die(format!(
+            "Still sending to {to}. Turning Omdrop off now would cut the transfer off. Cancel the send first, or turn it off anyway with: omdrop off --force"
+        ));
     }
     off_under_lock();
     crate::status::cmd_status(&[])
@@ -740,10 +738,10 @@ pub fn unit_install(plugin: &Path) -> bool {
         );
     }
     let target = c.config_home.join("systemd/user").join(UNIT);
-    if let Some(dir) = target.parent() {
-        if std::fs::create_dir_all(dir).is_err() {
-            die("omdrop could not create the folder systemd keeps your own services in.");
-        }
+    if let Some(dir) = target.parent()
+        && std::fs::create_dir_all(dir).is_err()
+    {
+        die("omdrop could not create the folder systemd keeps your own services in.");
     }
     let mut changed = false;
     let installed = crate::util::read_trimmed(&target).unwrap_or_default();
@@ -755,23 +753,23 @@ pub fn unit_install(plugin: &Path) -> bool {
     }
     // `omdrop dir` drop-ins written before 0.9.1 name the old identity folder.
     let dropin = PathBuf::from(format!("{}.d/10-download-dir.conf", target.display()));
-    if let Ok(text) = std::fs::read_to_string(&dropin) {
-        if text.lines().any(|l| l == "ReadWritePaths=%h/.opendrop") {
-            let fixed: String = text
-                .split_inclusive('\n')
-                .map(|l| {
-                    if l.trim_end_matches('\n') == "ReadWritePaths=%h/.opendrop" {
-                        l.replacen("%h/.opendrop", "%h/.omdrop", 1)
-                    } else {
-                        l.to_string()
-                    }
-                })
-                .collect();
-            if std::fs::write(&dropin, fixed).is_err() {
-                die(format!("omdrop could not update {}.", dropin.display()));
-            }
-            changed = true;
+    if let Ok(text) = std::fs::read_to_string(&dropin)
+        && text.lines().any(|l| l == "ReadWritePaths=%h/.opendrop")
+    {
+        let fixed: String = text
+            .split_inclusive('\n')
+            .map(|l| {
+                if l.trim_end_matches('\n') == "ReadWritePaths=%h/.opendrop" {
+                    l.replacen("%h/.opendrop", "%h/.omdrop", 1)
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        if std::fs::write(&dropin, fixed).is_err() {
+            die(format!("omdrop could not update {}.", dropin.display()));
         }
+        changed = true;
     }
     if changed && run("systemctl", &["--user", "daemon-reload"]) != 0 {
         die(

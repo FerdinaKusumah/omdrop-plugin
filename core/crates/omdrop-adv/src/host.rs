@@ -67,9 +67,10 @@ pub fn parse_mac(text: &str) -> Option<[u8; 6]> {
         return None;
     }
     let mut mac = [0u8; 6];
-    for (slot, pair) in mac.iter_mut().zip(hex.chunks_exact(2)) {
-        let hi = char::from(pair[0]).to_digit(16)?;
-        let lo = char::from(pair[1]).to_digit(16)?;
+    let (pairs, _) = hex.as_chunks::<2>();
+    for (slot, &[h, l]) in mac.iter_mut().zip(pairs) {
+        let hi = char::from(h).to_digit(16)?;
+        let lo = char::from(l).to_digit(16)?;
         *slot = (hi * 16 + lo) as u8;
     }
     Some(mac)
