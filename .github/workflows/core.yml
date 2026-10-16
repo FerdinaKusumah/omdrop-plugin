@@ -1,0 +1,35 @@
+name: Core (Rust)
+
+on:
+  push:
+    branches: [main]
+    paths: ["core/**", ".github/workflows/core.yml"]
+  pull_request:
+    paths: ["core/**", ".github/workflows/core.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    # Omarchy is Arch. The tests need openssl (validation records, the
+    # self-signed pair) and dbus-daemon (the BlueZ and portal mocks).
+    container: archlinux:latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - name: Install dependencies
+        working-directory: /
+        run: pacman -Syu --noconfirm --needed git rust openssl dbus
+      - uses: actions/checkout@v7
+      - name: Format
+        run: cargo fmt --check
+      - name: Test and lint as a regular user
+        # omdrop-radio's test seam is disabled for uid 0, and the identity
+        # code switches to root mode, so the suite must not run as root.
+        run: |
+          useradd --create-home tester
+          chown -R tester "$GITHUB_WORKSPACE"
+          su tester -c "cargo test --locked --workspace && cargo clippy --locked --workspace --all-targets -- -D warnings"
