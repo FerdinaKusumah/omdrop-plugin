@@ -892,7 +892,13 @@ fn an_installed_core_older_than_the_plugins_is_offered_an_update() {
 
 #[test]
 fn a_current_core_or_an_untested_backend_is_offered_nothing() {
-    for (backend, installed) in [(awdl(), "0.2.0-1"), (owl(serde_json::json!([])), "0.1.0-1")] {
+    let mut no_hardware = awdl();
+    no_hardware["hardware"] = serde_json::json!(false);
+    for (backend, installed) in [
+        (awdl(), "0.2.0-1"),
+        (owl(serde_json::json!([])), "0.1.0-1"),
+        (no_hardware, "0.1.0-1"),
+    ] {
         let r = Radio::new();
         r.helper(&backend_helper(Some(backend.clone())));
         with_core(&r, installed);

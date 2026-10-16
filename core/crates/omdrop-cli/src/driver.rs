@@ -363,11 +363,12 @@ fn core_wanted(plugin: &Path) -> Option<String> {
 }
 
 /// Where `omdrop install-core` installs: Apple's Broadcom Wi-Fi, with
-/// omdrop-awdl's helper or its hooks, until core has run on other backends.
+/// omdrop-awdl's helper or its hooks, on hardware that backend says it can
+/// drive, until core has run on other backends.
 fn core_supported() -> bool {
     match radio_probe() {
         Probe::None => apple_broadcom_wifi(),
-        _ => probe_field("backend") == "awdl",
+        _ => probe_field("backend") == "awdl" && probe_field("hardware") != "false",
     }
 }
 
@@ -392,7 +393,9 @@ pub fn core_offers() -> Vec<(String, String)> {
 }
 
 /// Installing core is the plugin's job, done before core exists, so there
-/// is one installer: the plugin's own, run as the Python version.
+/// is one installer: the plugin's own. The plugin's bin/omdrop runs
+/// install-core itself and never hands it here; this is for someone who runs
+/// core's binary directly.
 pub fn cmd_install_core() -> i32 {
     use std::os::unix::process::CommandExt;
     let Some(plugin) = ctx().plugin_dir() else {

@@ -25,13 +25,13 @@ def core_wanted():
     return f"{ver}-{rel}"
 
 
-def probe_helper(backend):
+def probe_helper(backend, hardware=True):
     """An omdrop-discoverable: omdrop-awdl 0.9.x's (no probe) for None, else
-    one whose probe names BACKEND and reports nothing missing."""
+    one whose probe names BACKEND, reports HARDWARE, and nothing missing."""
     if backend is None:
         return '#!/bin/sh\necho "usage: omdrop-discoverable start|stop|status" >&2\nexit 2\n'
     answer = json.dumps({"backend": backend, "version": "1.0.0", "contract": "0.7.0",
-                         "hardware": True, "missing": []})
+                         "hardware": hardware, "missing": []})
     return f"#!/bin/sh\n[ \"$1\" = probe ] || exit 2\ncat <<'EOF'\n{answer}\nEOF\n"
 
 
@@ -83,8 +83,8 @@ exit 0
         path.write_text(body)
         path.chmod(0o755)
 
-    def backend(self, name):
-        self.command("omdrop-discoverable", probe_helper(name))
+    def backend(self, name, hardware=True):
+        self.command("omdrop-discoverable", probe_helper(name, hardware))
 
     def no_broadcom(self):
         (self.broadcom / "vendor").write_text("0x8086\n")
@@ -120,6 +120,8 @@ exit 0
 
     def test_core_is_not_offered_where_it_is_untested(self):
         self.backend("owl")
+        self.assertEqual(self.doctor()["offers"], [])
+        self.backend("awdl", hardware=False)
         self.assertEqual(self.doctor()["offers"], [])
         self.backend(None)
         self.no_broadcom()
@@ -188,10 +190,12 @@ exit 0
         self.assertNotIn("makepkg", out)
 
     def test_it_refuses_where_core_is_untested(self):
-        for setup in ("owl", "no-broadcom"):
+        for setup in ("owl", "awdl-no-hardware", "no-broadcom"):
             with self.subTest(setup=setup):
                 if setup == "owl":
                     self.backend("owl")
+                elif setup == "awdl-no-hardware":
+                    self.backend("awdl", hardware=False)
                 else:
                     self.backend(None)
                     self.no_broadcom()
@@ -199,6 +203,37 @@ exit 0
                 self.assertNotEqual(code, 0, out)
                 self.assertNotIn("makepkg", out)
                 self.assertNotIn("pacman -S", out)
+
+    # --- the hand-off to core -------------------------------------------------
+
+    def test_install_core_is_never_handed_to_an_installed_core(self):
+        # A core built before install-core existed answers it with its usage.
+        ran = Path(self.tmp.name) / "core-ran"
+        self.command("old-core", f"#!/bin/sh\ntouch {ran}\necho 'usage: omdrop ...' >&2\nexit 1\n")
+        self.env["OMDROP_CORE"] = str(self.bin / "old-core")
+        for implementation in (None, "rust"):
+            with self.subTest(implementation=implementation):
+                if implementation is None:
+                    self.env.pop("OMDROP_IMPLEMENTATION", None)
+                else:
+                    self.env["OMDROP_IMPLEMENTATION"] = implementation
+                code, out = self.install()
+                self.assertEqual(code, 0, out)
+                self.assertIn("makepkg", out)
+                self.assertFalse(ran.exists(), out)
+
+    def test_install_core_runs_here_with_rust_chosen_and_no_core(self):
+        self.env["OMDROP_IMPLEMENTATION"] = "rust"
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertIn("makepkg", out)
+
+    def test_install_core_still_refuses_an_unknown_implementation(self):
+        self.env["OMDROP_IMPLEMENTATION"] = "ruby"
+        code, out = self.install()
+        self.assertEqual(code, 2, out)
+        self.assertIn("OMDROP_IMPLEMENTATION must be python or rust", out)
+        self.assertNotIn("makepkg", out)
 
 
 if __name__ == "__main__":

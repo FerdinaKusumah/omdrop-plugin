@@ -49,13 +49,18 @@ PROJ="$(cd "$(dirname "$SELF")/.." && pwd)"
 # OMDROP_IMPLEMENTATION picks the stack: python keeps this script and the
 # Python programs; rust requires core; unset uses core when it is installed.
 # Anything else is refused, so a typo cannot quietly pick a stack.
-# OMDROP_CORE moves the binary for tests. Never hand off to ourselves: a
+# install-core never goes to core, whatever OMDROP_IMPLEMENTATION says: it is
+# how core gets installed or updated, and a core older than install-core would
+# answer it with its usage. With rust and no core it runs here for the same
+# reason. OMDROP_CORE moves the binary for tests. Never hand off to ourselves: a
 # /usr/bin/omdrop that is a link to this file would loop.
 OMDROP_CORE="${OMDROP_CORE:-/usr/bin/omdrop}"
 case "${OMDROP_IMPLEMENTATION:-}" in
   python) ;;
   rust|'')
-    if [[ -x "$OMDROP_CORE" && "$(readlink -f "$OMDROP_CORE")" != "$SELF" ]]; then
+    if [[ "${1:-}" == install-core ]]; then
+      :
+    elif [[ -x "$OMDROP_CORE" && "$(readlink -f "$OMDROP_CORE")" != "$SELF" ]]; then
       exec -a "$0" "$OMDROP_CORE" "$@"
     elif [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
       printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but omdrop-core is not installed at %s.\n' "$OMDROP_CORE" >&2
@@ -1163,11 +1168,11 @@ core_wanted() {
 }
 
 # Offered where it has been tested live: Apple's Broadcom Wi-Fi, with
-# omdrop-awdl's helper or its hooks. Other backends follow once core has run
-# on them (issue #73).
+# omdrop-awdl's helper or its hooks, on hardware that backend says it can
+# drive. Other backends follow once core has run on them (issue #73).
 core_supported() {
   if radio_probe; then
-    [[ "$(probe_field backend)" == awdl ]]
+    [[ "$(probe_field backend)" == awdl && "$(probe_field hardware)" != false ]]
   else
     apple_broadcom_wifi
   fi
@@ -1197,6 +1202,8 @@ cmd_install_core() {
     radio_probe_hung && die "$(radio_probe_hung_say)"
     [[ "$(probe_field backend)" == awdl ]] \
       || die "omdrop-core has not been tested with the $(probe_field backend) radio backend yet. Until it has, it is installed only on Apple Broadcom Wi-Fi."
+    [[ "$(probe_field hardware)" != false ]] \
+      || die "This computer's Wi-Fi is not one the installed radio backend ($(probe_field backend)) can drive, so omdrop-core is not installed here."
   else
     apple_broadcom_wifi \
       || die "This computer has no Apple Broadcom Wi-Fi. omdrop-core has been tested only there so far, so it is not installed here."
