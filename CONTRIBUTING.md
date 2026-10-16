@@ -57,7 +57,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-`core/README.md` covers the programs and how they find each other, and `core/docs/backend-contract.md` the hooks a radio backend provides. A change to behaviour both stacks share should change both, or say why not.
+`core/README.md` covers the programs and how they find each other, and `core/docs/backend-contract.md` the hooks a radio backend provides.
+
+New development goes into `core/` only. The bash and Python programs remain as the fallback for installs without omdrop-core, are not developed further, and will be removed at 1.0.0, so a pull request that changes them will usually be asked to make the change in Rust instead. Security fixes are the exception: patches for the bash and Python programs are welcome, because installs without omdrop-core still run them.
 
 ### Receiver changes
 
