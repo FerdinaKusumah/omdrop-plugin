@@ -1,0 +1,25 @@
+[package]
+name = "omdrop-receiver"
+description = "Omdrop AirDrop receiver (replaces airdrop-serve.py)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "omdrop-receiver"
+path = "src/main.rs"
+
+[dependencies]
+omdrop-identity.workspace = true
+omdrop-proto.workspace = true
+libc.workspace = true
+plist.workspace = true
+rustls.workspace = true
+toml_edit.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+tempfile.workspace = true

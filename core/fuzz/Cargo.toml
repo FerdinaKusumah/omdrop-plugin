@@ -1,0 +1,47 @@
+[package]
+name = "omdrop-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+omdrop-proto = { path = "../crates/omdrop-proto" }
+plist = "1"
+tempfile = "3"
+
+# Its own workspace, as cargo-fuzz expects: the main workspace excludes it.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "dvzip_decode"
+path = "fuzz_targets/dvzip_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cpio_extract"
+path = "fuzz_targets/cpio_extract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safeplist"
+path = "fuzz_targets/safeplist.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_request"
+path = "fuzz_targets/http_request.rs"
+test = false
+doc = false
+bench = false

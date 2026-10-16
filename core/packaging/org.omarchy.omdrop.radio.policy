@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+
+<!--
+  omdrop runs its radio helper through pkexec. This grants one named action,
+  bound by annotation to one helper at a root-owned path that an unprivileged
+  user cannot modify. The helper validates every argument itself: polkit
+  authorizes the program, not its argv.
+
+  allow_active is yes because becoming discoverable is an ordinary thing to do
+  from your own seat, like joining a network, and the helper does exactly that
+  one job. Remote and inactive sessions must authenticate as an administrator:
+  nobody should turn on a machine's discoverability from somewhere else.
+
+  A distinct action and path from brcmfmac-awdl-dkms 0.9.x's
+  org.omarchy.omdrop.discover (/usr/lib/omdrop/omdrop-discoverable), so both
+  packages can be installed side by side.
+
+  No exec.allow_gui: the helper is a command-line program and never needs
+  DISPLAY or XAUTHORITY, so pkexec does not pass them to root.
+-->
+<policyconfig>
+  <vendor>Omarchy omdrop</vendor>
+  <vendor_url>https://github.com/netmojo-systems/omdrop-core</vendor_url>
+
+  <action id="org.omarchy.omdrop.radio">
+    <description>Make this computer visible to nearby Apple devices</description>
+    <message>Authentication is required to change AWDL discoverability</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/omdrop-core/omdrop-radio</annotate>
+  </action>
+</policyconfig>

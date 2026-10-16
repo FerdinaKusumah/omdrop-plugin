@@ -1,0 +1,95 @@
+# omdrop-core
+
+The radio-independent half of Omdrop, AirDrop for Omarchy, in Rust: the `omdrop` command, the AirDrop receiver and sender, identity, the advertisers, and the one root entry point. It lives in `core/` of the [omdrop-plugin](https://github.com/netmojo-systems/omdrop-plugin) repository, beside the panel that uses it. A radio backend supplies the hooks that bring up `awdl0`; see [the backend contract](docs/backend-contract.md).
+
+**Status:** not released. It is built and installed as its own package (`makepkg -si` in this directory), never run from the plugin's clone: the root helper must sit at a fixed root-owned path. When `/usr/bin/omdrop` is installed, the plugin's `bin/omdrop` hands every command to it; `OMDROP_IMPLEMENTATION=python` keeps the bash and Python programs. Each program is a drop-in for the one it replaces, with the same arguments, output, files and exit codes, so the old programs remain a fallback.
+
+Proven live against a Mac and an iPhone (October 2026):
+- the receiver, in Everyone and Contacts Only, including HEIC originals and 141.6 MB videos (six of six byte-identical);
+- the sender, to a Mac in Contacts Only, and to an iPhone in Everyone (a file and a link) and in Contacts Only.
+
+`omdrop-radio` with the Broadcom hooks ran live on 2026-10-15: windows through the plugin, stop, stop→start, natural expiry, and iPhone and Mac transfers in Contacts Only. A side-by-side comparison with the Python stack on one machine found no case where Python succeeded and Rust failed. Not yet proven: the omdrop-owl backend, BLE wake, a packaged (non-mixed) install, Decline and the Ask thumbnail on an iPhone, and longer fuzzing.
+
+## Programs
+
+|Installed as|Crate|Replaces|Runs as|
+|---|---|---|---|
+|`/usr/bin/omdrop`|`omdrop-cli`|omdrop-plugin `bin/omdrop`, `bin/pick.py`|user|
+|`/usr/lib/omdrop-core/omdrop-receiver`|`omdrop-receiver`|omdrop-plugin `bin/airdrop-serve.py`|user (systemd user unit)|
+|`/usr/lib/omdrop-core/send-to-peer`|`omdrop-send`|omdrop-awdl `userspace/send-to-peer`|user|
+|`/usr/lib/omdrop-core/airdrop-send`|`omdrop-send`|omdrop-awdl `userspace/airdrop-send.py`|user|
+|`/usr/lib/omdrop-core/omdrop-radio`|`omdrop-radio`|the core of omdrop-awdl `userspace/omdrop-discoverable`|root, through polkit action `org.omarchy.omdrop.radio`|
+|`/usr/lib/omdrop-core/omdrop-adv`|`omdrop-adv`|omdrop-awdl `ble-airdrop-adv.py`, `awdl-mdns-respond.py`, `awdl-airdrop-adv.py`|root (and user for the `ble` wake)|
+
+Libraries:
+
+- `omdrop-identity`: the [identity contract](https://github.com/netmojo-systems/omdrop-awdl/blob/main/docs/identity-contract.md), the kernel-keyring cache, the disk and self-signed identities, and the 1Password lifecycle. Passes the shared `identity-vectors.json`.
+- `omdrop-proto`: TLS, DVZip and cpio, HTTP framing, bounded plist parsing, the Contacts Only policy, and debug dumps.
+
+What changes for users, compared with the Python and bash programs:
+
+- No Python runtime, and none of `python-libarchive-c`, `python-pillow`, `python-zeroconf`, `python-ifaddr`, `python-dbus` or `python-gobject`.
+- Untrusted network input is parsed in Rust: archives no longer go through libarchive, and plists are parsed with size, count and depth limits.
+- The root helper is no longer bash. Its radio-specific work runs as backend hooks with a fixed, cleared environment.
+
+## Build
+
+```bash
+cargo build --release --workspace
+```
+
+To build and install the package:
+
+```bash
+makepkg -si
+```
+
+`omdrop-radio` needs a backend that installs hooks in `/usr/lib/omdrop/radio/`. The Broadcom hooks are on omdrop-awdl's `feat/backend-hooks` branch. Without them, `omdrop` uses the 0.9.x `omdrop-discoverable` instead.
+
+## How `omdrop` finds the other programs
+
+Each lookup stops at the first match:
+
+- **Sender:** `OMDROP_SENDER`; `send-to-peer` in `<prefix>/lib/omdrop-core/` when `omdrop` is `<prefix>/bin/omdrop`; the directory `omdrop` is in (a development build); `/usr/lib/omdrop/send-to-peer`; `PATH`.
+- **Root helper:** `OMDROP_DISCOVERABLE`; `/usr/lib/omdrop-core/omdrop-radio` if `/usr/lib/omdrop/radio/` exists; `/usr/lib/omdrop/omdrop-discoverable`.
+- **Receiver:** `omdrop-receiver`, found like the sender; otherwise the plugin's `airdrop-serve.py`.
+
+`OMDROP_IMPLEMENTATION` chooses the stack: `python` uses the bash and Python programs throughout, for comparison; `rust`, or unset, uses these programs, falling back to a backend's own `omdrop-discoverable` when it ships no hooks. Any other value is refused (exit 2).
+
+## Test
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Run the tests as an ordinary user, never as root or namespace root: `omdrop-radio`'s test seam is disabled for uid 0, and the identity code switches to root mode. Some tests need `openssl`, `dbus-daemon` and unprivileged user namespaces; tests that cannot set these up skip. Tests never touch Bluetooth, the real keyring or the live identity.
+
+On a machine with a live `awdl0`, run the suite in its own network namespace, mapped back to a non-root uid:
+
+```bash
+unshare -rnm sh -c 'mount -t sysfs none /sys && ip link set lo up &&
+  exec unshare --user --map-user=1001 --map-group=1001 cargo test --offline --workspace'
+```
+
+Keep `CARGO_TARGET_DIR` on disk. Where `/tmp` is tmpfs, a target directory there holds several gigabytes of RAM.
+
+Interoperability with the Python programs, over loopback:
+
+```bash
+OMDROP_INTEROP_PY_SERVE=../bin/airdrop-serve.py \
+OMDROP_INTEROP_RS_SERVE=target/debug/omdrop-receiver \
+  cargo test -p omdrop-send --test interop
+```
+
+`crates/omdrop-radio/tests/python/` runs omdrop-awdl's privileged-input and supervisor tests against `omdrop-radio` and a mock backend.
+
+Fuzzing: `fuzz/` has cargo-fuzz targets for the archive decoder, extraction, the plist parser and HTTP request parsing. They need a nightly toolchain:
+
+```bash
+cd fuzz && cargo +nightly fuzz run cpio_extract -- -max_total_time=300
+```
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

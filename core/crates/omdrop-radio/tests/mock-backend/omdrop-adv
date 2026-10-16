@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stands in for omdrop-adv beside omdrop-radio in the conformance tests: it
+# records its argv and, for the long-running advertisers, waits to be killed.
+set -u
+T=${OMDROP_RADIO_TEST_ROOT:?the fake advertiser runs only under the test seam}
+echo "$*" >> "$T/adv-calls"
+case ${1:-} in
+  mdns|ble) while :; do sleep 1; done ;;
+  announce) exit 0 ;;
+  *) exit 2 ;;
+esac

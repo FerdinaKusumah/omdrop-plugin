@@ -1,0 +1,28 @@
+[package]
+name = "omdrop-proto"
+description = "AirDrop protocol pieces shared by the Omdrop receiver and sender"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+omdrop-identity.workspace = true
+flate2.workspace = true
+hex.workspace = true
+httparse.workspace = true
+libc.workspace = true
+# The event stream, for safeplist's bounded parse of untrusted plists; the
+# feature name is plist's, and Cargo.lock pins the version it was built with.
+plist = { workspace = true, features = ["enable_unstable_features_that_may_break_with_minor_version_bumps"] }
+rustls.workspace = true
+rustls-pki-types.workspace = true
+rustls-webpki.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
