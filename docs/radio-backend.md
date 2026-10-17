@@ -12,12 +12,14 @@ OWL on a MediaTek MT7925. The plugin finds the backend's helpers in
 `/usr/lib/omdrop`, on `PATH`, or through `OMDROP_DISCOVERABLE` and
 `OMDROP_SENDER`, and calls them as below.
 
-This page describes the interface the bash and Python programs use. omdrop-core
-(`core/`), which Omdrop runs on Macs once `omdrop install-core` has installed
-it, uses the same `omdrop-discoverable` when a backend ships nothing else. A
-backend can instead provide per-operation hooks in `/usr/lib/omdrop/radio/`,
-as described in [the backend contract](../core/docs/backend-contract.md); core
-then drives the radio through them directly.
+This page describes the interface the bash and Python programs use. Omdrop
+runs omdrop-core (`core/`) instead wherever the radio backend supports it:
+today omdrop-awdl, with omdrop-owl to follow once it ships core's hooks
+(#73). Core uses the same `omdrop-discoverable` when a backend ships nothing
+else. A backend can instead provide per-operation hooks in
+`/usr/lib/omdrop/radio/`, as described in
+[the backend contract](../core/docs/backend-contract.md); core then drives the
+radio through them directly.
 
 ## `omdrop-discoverable`
 

@@ -15,7 +15,7 @@ Omdrop is moving from bash and Python to Rust. **All new development goes into t
 
 The panel (`Panel.qml` and the other QML files), the agent skill (`skills/`) and the link handler belong to the plugin only; they have no Rust counterpart.
 
-The Rust version is the default on Macs with omdrop-awdl: `omdrop setup` and `omdrop doctor` offer it there, `omdrop install-core` installs it, and the plugin then hands it every command. Machines without it, including every omdrop-owl machine until core has been tested there, run the bash and Python programs.
+Omdrop runs the Rust version wherever the radio backend supports it, and the bash and Python programs elsewhere. Today that is omdrop-awdl; omdrop-owl follows once it ships core's hooks (#73). With a supported backend, `omdrop setup` and `omdrop doctor` offer core, `omdrop install-core` installs it, and the plugin then hands it every command.
 
 Epic #73 tracks the migration. Rust becomes the only implementation in 1.0.0, once this plugin, omdrop-awdl and omdrop-owl all run on it.
 

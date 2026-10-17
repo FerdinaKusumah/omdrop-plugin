@@ -32,30 +32,30 @@ On first use, the panel opens a terminal that asks for your password to:
 
 The first time you turn Omdrop on, it finishes setting up and installs the `omdrop` command at `~/.local/bin/omdrop`. To get the command before that, run `~/.config/omarchy/plugins/netmojo.omdrop/bin/omdrop setup`. Run `omdrop --version` to include the version in bug reports.
 
-### omdrop-core on a Mac
+### omdrop-core
 
-On a Mac, Omdrop runs as omdrop-core, its Rust version. Install it once the `omdrop` command is set up, with Omdrop off:
+Omdrop runs as omdrop-core, its Rust version, wherever the radio backend supports it, and as its bash and Python programs on other backends. Today omdrop-core supports omdrop-awdl; omdrop-owl follows once it ships omdrop-core's hooks ([#73](https://github.com/netmojo-systems/omdrop-plugin/issues/73)).
+
+With a supported backend, `omdrop setup` and `omdrop doctor` offer omdrop-core. Install it once the `omdrop` command is set up, with Omdrop off:
 
 ```bash
 omdrop install-core
 ```
 
-It opens a terminal that asks for your password and installs the `omdrop-core` package: from your package repositories when they carry the version this release needs, and otherwise built from the plugin's `core/`. `omdrop setup` and `omdrop doctor` offer it until it is installed.
+It opens a terminal that asks for your password and installs the `omdrop-core` package: from your package repositories when they carry the version this release needs, and otherwise built from the plugin's `core/`. With any other backend, it refuses and installs nothing.
 
 - Once omdrop-core is installed and at least the version this release needs, the plugin hands every command to it, including the panel's.
 - An older omdrop-core gets no commands: the bash and Python programs run instead, and `omdrop doctor` says how to update it.
 - Without omdrop-core, the bash and Python programs run, and everything above works the same.
 - `OMDROP_IMPLEMENTATION=python` keeps the bash and Python programs with omdrop-core installed; `OMDROP_IMPLEMENTATION=rust` refuses to run without it.
 
-On a PC with omdrop-owl, Omdrop runs the bash and Python programs: `omdrop install-core` installs omdrop-core only on Apple Broadcom Wi-Fi until it has been tested with omdrop-owl.
-
 ## Upgrade
 
 ```bash
 omarchy plugin update netmojo.omdrop   # fetch the latest release
 omarchy-restart-shell                  # the bar loads the new panel only after a shell restart
-omdrop install-driver                  # on a Mac, update the driver if the new release needs a newer one
-omdrop install-core                    # on a Mac, install or update omdrop-core to the version this release needs
+omdrop install-driver                  # on a Mac, rebuild the driver if the new release needs a newer one
+omdrop install-core                    # if your radio backend supports omdrop-core, install or update it
 ```
 
 `omdrop install-driver` and `omdrop install-core` do nothing when everything they install is already current. `omdrop doctor` reports an omdrop-core older than the release needs, and, once omdrop-core runs, a driver older than the release needs. On a PC, update the radio backend through its own package: `omdrop install-driver` leaves it alone. If Omdrop is on while you upgrade, turn it off and on again: the receiver keeps running the old version until it restarts. `omdrop install-core` asks you to turn Omdrop off first.
@@ -201,7 +201,7 @@ What the cache does and doesn't protect against:
 
 The radio helper, `/usr/lib/omdrop/omdrop-discoverable`, runs as root through `pkexec`, because configuring AWDL needs root: vendor commands to the Broadcom firmware, or monitor-mode frame injection with OWL. The radio backend package installs the helper and a polkit action that covers only that root-owned path: `org.omarchy.omdrop.discover` from omdrop-awdl, `io.github.t4t5.omdrop-owl.discover` from omdrop-owl. It needs no password from your own active session, and an administrator's password from remote or inactive sessions.
 
-With omdrop-core installed, its root helper, `/usr/lib/omdrop-core/omdrop-radio`, runs as root instead, through polkit action `org.omarchy.omdrop.radio`, with the same password rules. It runs the radio backend's hooks in `/usr/lib/omdrop/radio/`, which omdrop-awdl installs from 0.10.0, and the backend's `omdrop-discoverable` when there are none.
+With omdrop-core installed, its root helper, `/usr/lib/omdrop-core/omdrop-radio`, runs as root instead, through polkit action `org.omarchy.omdrop.radio`, with the same password rules. It runs the radio backend's hooks in `/usr/lib/omdrop/radio/`, and the backend's `omdrop-discoverable` when there are none.
 
 The receiver runs as you, so received files are yours. The firewall rule is added with `sudo ufw` in the install terminal, which normally reuses that terminal's earlier authentication.
 
@@ -218,7 +218,7 @@ omdrop skill remove
 omarchy plugin remove netmojo.omdrop
 sudo pacman -R brcmfmac-awdl-dkms   # the radio backend on a Mac; omdrop-owl on a PC
 omdrop identity lock                # clear a cached identity
-sudo pacman -R omdrop-core          # omdrop-core, on a Mac that has it
+sudo pacman -R omdrop-core          # omdrop-core, if installed
 rm -rf ~/.omdrop                    # this computer's AirDrop identity
 ```
 
@@ -231,7 +231,7 @@ rm -rf ~/.omdrop                    # this computer's AirDrop identity
 
 To report a bug or request a feature, [open an issue](https://github.com/netmojo-systems/omdrop-plugin/issues). [Pull requests](https://github.com/netmojo-systems/omdrop-plugin/pulls) are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) lists the setup details, hardware evidence, and tests a pull request needs.
 
-`core/` holds [omdrop-core](core/README.md), the Rust version of the `omdrop` command, the receiver, the sender and the root helper. It is what Omdrop runs on a Mac once `omdrop install-core` has installed it ([omdrop-core on a Mac](#omdrop-core-on-a-mac)), and new development goes into it. The bash and Python programs remain for installs without omdrop-core.
+`core/` holds [omdrop-core](core/README.md), the Rust version of the `omdrop` command, the receiver, the sender and the root helper. It is what Omdrop runs wherever the radio backend supports it ([omdrop-core](#omdrop-core)), and new development goes into it. The bash and Python programs remain for other backends and for installs without omdrop-core.
 
 ## Trademark
 
