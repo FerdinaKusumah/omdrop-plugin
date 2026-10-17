@@ -49,7 +49,14 @@ class CoreHandoffTests(unittest.TestCase):
         self.core.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ("OMDROP_IMPLEMENTATION", "CORE_HANGS")}
-        self.env.update(OMDROP_CORE=str(self.core), CORE_VERSION=CORE_MIN)
+        # A radio backend that ships omdrop-core's hooks, as omdrop-awdl
+        # 0.10.0 does: without one, core gets nothing.
+        self.hooks = Path(self.tmp.name) / "radio"
+        self.hooks.mkdir()
+        (self.hooks / "probe").write_text("#!/bin/sh\nexit 0\n")
+        (self.hooks / "probe").chmod(0o755)
+        self.env.update(OMDROP_CORE=str(self.core), CORE_VERSION=CORE_MIN,
+                        OMDROP_HOOKS=str(self.hooks))
 
     def run_omdrop(self, *args, **env):
         return subprocess.run([str(OMDROP), *args], env={**self.env, **env},
@@ -103,6 +110,19 @@ class CoreHandoffTests(unittest.TestCase):
 
     def test_rust_uses_core(self):
         self.assert_handed_off(self.run_omdrop("version", OMDROP_IMPLEMENTATION="rust"))
+
+    def test_a_backend_without_hooks_keeps_the_bash(self):
+        # omdrop-owl ships no hooks yet: a core that came with the omdrop
+        # package must not drive it.
+        (self.hooks / "probe").unlink()
+        self.assert_ran_here(self.run_omdrop("version"))
+
+    def test_rust_without_hooks_is_an_error_not_a_fallback(self):
+        (self.hooks / "probe").unlink()
+        run = self.run_omdrop("version", OMDROP_IMPLEMENTATION="rust")
+        self.assertEqual(run.returncode, 2)
+        self.assertEqual(run.stdout, "")
+        self.assertIn("installs no omdrop-core hooks", run.stderr)
 
     def test_rust_without_core_is_an_error_not_a_fallback(self):
         absent = str(Path(self.tmp.name) / "absent")

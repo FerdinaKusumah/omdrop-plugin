@@ -94,27 +94,43 @@ version_ge() {
 # 0.1.3 pins omdrop-awdl 0.10.0 (install-driver goes to core, so an older core
 # would build the older driver), and 0.1.4 has #57's HEIC previews and Files
 # fallback, which an older core would silently lack.
+#
+# Core also needs a radio backend that ships its hooks (core's
+# docs/backend-contract.md): omdrop-awdl from 0.10.0 does, omdrop-owl does not
+# yet. Without them this script and the Python programs run, so a core that
+# arrives with the omdrop package never drives a backend it has not been
+# tested with. The check is one file test. OMDROP_HOOKS moves it for tests.
 CORE_MIN=0.1.4
 CORE_TOO_OLD=
+CORE_NO_HOOKS=
 core_version() {
   timeout -k 1 2 "$OMDROP_CORE" version </dev/null 2>/dev/null | sed -n 's/^omdrop-core \([^[:space:]]*\)$/\1/p' | head -n 1
 }
 OMDROP_CORE="${OMDROP_CORE:-/usr/lib/omdrop-core/omdrop}"
+OMDROP_HOOKS="${OMDROP_HOOKS:-/usr/lib/omdrop/radio}"
 case "${OMDROP_IMPLEMENTATION:-}" in
   python) ;;
   rust|'')
     if [[ "${1:-}" == install-core ]]; then
       :
     elif [[ -x "$OMDROP_CORE" && "$(readlink -f "$OMDROP_CORE")" != "$SELF" ]]; then
-      CORE_TOO_OLD=$(core_version)
-      if [[ -n "$CORE_TOO_OLD" ]] && version_ge "$CORE_TOO_OLD" "$CORE_MIN"; then
-        exec -a "$0" "$OMDROP_CORE" "$@"
-      fi
-      CORE_TOO_OLD=${CORE_TOO_OLD:-unknown}
-      if [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
-        printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but the omdrop-core at %s (version %s) is older than the %s this version of Omdrop needs.\n' \
-          "$OMDROP_CORE" "$CORE_TOO_OLD" "$CORE_MIN" >&2
-        exit 2
+      if [[ ! -x "$OMDROP_HOOKS/probe" ]]; then
+        CORE_NO_HOOKS=1
+        if [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
+          printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but the radio backend installs no omdrop-core hooks in %s.\n' "$OMDROP_HOOKS" >&2
+          exit 2
+        fi
+      else
+        CORE_TOO_OLD=$(core_version)
+        if [[ -n "$CORE_TOO_OLD" ]] && version_ge "$CORE_TOO_OLD" "$CORE_MIN"; then
+          exec -a "$0" "$OMDROP_CORE" "$@"
+        fi
+        CORE_TOO_OLD=${CORE_TOO_OLD:-unknown}
+        if [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
+          printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but the omdrop-core at %s (version %s) is older than the %s this version of Omdrop needs.\n' \
+            "$OMDROP_CORE" "$CORE_TOO_OLD" "$CORE_MIN" >&2
+          exit 2
+        fi
       fi
     elif [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
       printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but omdrop-core is not installed at %s.\n' "$OMDROP_CORE" >&2
@@ -743,6 +759,74 @@ link_command() {
   return 1
 }
 
+# The version a plugin directory's manifest.json declares, or nothing.
+manifest_version() {
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1/manifest.json" 2>/dev/null | head -n 1
+}
+
+# The omdrop package installs this plugin under /usr/share/omdrop. The shell
+# loads third-party plugins only from ~/.config/omarchy/plugins, which a
+# package cannot write to, so setup links the packaged copy in there for each
+# user, as omarchy-meeting-recorder and flea do theirs. Only a packaged copy
+# (one under /usr) does this: setup run from a development checkout never
+# touches the user's installed plugin.
+#
+# A previous installation -- a git or marketplace clone, or a link to another
+# copy -- is replaced only after the user says so, which needs a terminal. The
+# panel's first `omdrop on` runs setup without one; then it is left in place
+# with a warning, and the next `omdrop setup` asks. A replaced clone is moved
+# aside to a hidden directory, which the shell ignores, not deleted. Returns 0
+# when it linked the plugin. OMDROP_PACKAGE_ROOT moves /usr for tests; it only
+# decides whether setup links the plugin into the user's own home.
+PLUGIN_ID=netmojo.omdrop
+link_plugin() {
+  local plugin dir="$HOME/.config/omarchy/plugins" target old answer aside
+  plugin=$(readlink -f "$1") || return 1
+  [[ "$plugin" == "$(readlink -f "${OMDROP_PACKAGE_ROOT:-/usr}")"/* ]] || return 1
+  target="$dir/$PLUGIN_ID"
+  [[ -L "$target" && "$(readlink -f "$target")" == "$plugin" ]] && return 1
+  if [[ -L "$target" && ! -e "$target" ]]; then
+    rm -f "$target"
+  elif [[ -e "$target" ]]; then
+    old=$(readlink -f "$target")
+    if [[ ! -t 0 || ! -t 1 ]]; then
+      echo "A previous Omdrop plugin installation is at $old, so the shell still runs it rather than the omdrop package. Run omdrop setup in a terminal to replace it." >&2
+      return 1
+    fi
+    local have want with
+    have=$(manifest_version "$target")
+    want=$(manifest_version "$plugin")
+    if [[ -n "$have" && -n "$want" ]] && ! version_ge "$have" "$want"; then
+      with="with a newer version ($have → $want)"
+    else
+      with="with version ${want:-unknown} (installed: ${have:-unknown})"
+    fi
+    printf 'Previous Omdrop plugin installation detected at %s. This package will replace it %s. Continue? (Y/n) ' "$old" "$with"
+    read -r answer || answer=n
+    case "${answer,,}" in
+      ''|y|yes) ;;
+      *) echo "Left $old in place: the shell keeps running it, not the omdrop package."; return 1 ;;
+    esac
+    if [[ -L "$target" ]]; then
+      rm -f "$target" || { echo "omdrop could not remove the link $target." >&2; return 1; }
+    else
+      aside="$dir/.$PLUGIN_ID.replaced-$(date +%Y%m%d-%H%M%S)"
+      mv "$target" "$aside" || { echo "omdrop could not move $target aside, so it left it in place." >&2; return 1; }
+      echo "Moved the previous installation to $aside. Delete it once Omdrop works from the package."
+    fi
+  fi
+  if ! { mkdir -p "$dir" && ln -s "$plugin" "$target"; }; then
+    echo "omdrop could not link $target to $plugin, so the bar has no Omdrop widget. Create the link by hand: ln -s $plugin $target" >&2
+    return 1
+  fi
+  echo "Added Omdrop to the shell's plugins: $target links to $plugin."
+  command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell shell rescanPlugins >/dev/null 2>&1
+  if command -v omarchy-plugin-enable >/dev/null 2>&1 && omarchy-plugin-enable "$PLUGIN_ID" >/dev/null 2>&1; then
+    echo "Added its widget to the bar."
+  fi
+  return 0
+}
+
 # Everything `setup` installs, each step idempotent. Returns 0 when it changed
 # something, 1 when everything was already in place. Shared with require_unit,
 # so the first `omdrop on` sets up a fresh install without being asked.
@@ -757,6 +841,7 @@ setup_install() {
   fi
 
   link_command "$plugin" && did=1
+  link_plugin "$plugin" && did=1
 
   # Received links are stored as .url files, and a Mac may send a .webloc.
   # Without this, double-clicking one opens it in a text editor.
@@ -1258,6 +1343,14 @@ core_supported() {
 # and install-core replaces it, so offer that as an update.
 core_offers() {
   [[ "${OMDROP_IMPLEMENTATION:-}" == python ]] && return 0
+  if [[ -n "$CORE_NO_HOOKS" ]]; then
+    # Core is installed but the backend gives it nothing to drive. On the
+    # Broadcom backend that is an omdrop-awdl older than 0.10.0; elsewhere it
+    # is a backend that has no hooks yet, which is not the user's to fix.
+    core_supported || return 0
+    printf 'core\t%s\n' "omdrop-core is installed, but the Wi-Fi driver is too old to run it, so Omdrop is running its Python version instead. Update it with: omdrop install-driver"
+    return 0
+  fi
   if [[ -n "$CORE_TOO_OLD" ]]; then
     local owner how
     owner=$(pacman -Qqo "$OMDROP_CORE" 2>/dev/null) \
@@ -1284,6 +1377,14 @@ core_offers() {
   printf 'core\t%s\n' "omdrop-core, the Rust version of Omdrop, is not installed. The Python version Omdrop is running instead is going away; install omdrop-core with: omdrop install-core"
 }
 
+# The omdrop package (omarchy-pkgs) installs this plugin under /usr/share/omdrop
+# with core beside it. Core then belongs to that package, not to omdrop-core,
+# which the package replaces.
+OMDROP_PKG=omdrop
+core_packaged() {
+  [[ "$(pacman -Qqo "$OMDROP_CORE" 2>/dev/null)" == "$OMDROP_PKG" ]]
+}
+
 # Installed from a repository that carries this version or newer, and otherwise
 # built from this plugin's core/ with makepkg, in the same visible terminal as
 # install-driver. The build tree and package go to the cache, not the plugin's
@@ -1291,6 +1392,8 @@ core_offers() {
 # have, so the build skips them.
 cmd_install_core() {
   local want have repo build cache core_q cache_q
+  core_packaged \
+    && die "omdrop-core comes with the $OMDROP_PKG package, which updates it with the rest of the system (omarchy update)."
   want=$(core_wanted) \
     || die "This copy of the plugin has no core/ to build omdrop-core from."
   if radio_probe; then

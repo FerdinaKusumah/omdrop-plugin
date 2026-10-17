@@ -1,0 +1,11 @@
+post_install() {
+  cat <<'MSG'
+Omdrop is installed. Each user who wants it runs, once:
+
+  omdrop setup
+
+That adds Omdrop to the bar and installs the receiver service. The radio
+comes from a separate package: brcmfmac-awdl-dkms on an Apple Silicon Mac,
+omdrop-owl on other Wi-Fi cards. `omdrop doctor` says what is missing.
+MSG
+}

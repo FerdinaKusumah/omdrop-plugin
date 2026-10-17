@@ -142,12 +142,19 @@ exit 0
         out = self.omdrop("doctor").stdout
         self.assertRegex(out, r"(?s)\nTo do:\n  - omdrop-core.*going away.*omdrop install-core")
 
-    def old_core(self, owner=None):
-        # An installed core that answers `version` with one older than CORE_MIN.
+    def old_core(self, owner=None, hooks=True):
+        # An installed core that answers `version` with one older than
+        # CORE_MIN, beside a radio backend that ships core's hooks.
         core = self.bin / "core"
         core.write_text("#!/bin/sh\necho 'omdrop-core 0.0.1'\nexit 7\n")
         core.chmod(0o755)
         self.env["OMDROP_CORE"] = str(core)
+        radio = Path(self.tmp.name) / "radio"
+        radio.mkdir(exist_ok=True)
+        if hooks:
+            (radio / "probe").write_text("#!/bin/sh\nexit 0\n")
+            (radio / "probe").chmod(0o755)
+        self.env["OMDROP_HOOKS"] = str(radio)
         if owner:
             self.env["CORE_OWNER"] = owner
 
@@ -174,6 +181,29 @@ exit 0
                 say = self.doctor()["offers"][0]["say"]
                 self.assertTrue(say.endswith(update), say)
                 self.assertNotIn("install-core", say)
+
+    def test_core_without_a_backend_with_hooks_points_at_the_driver(self):
+        # omdrop-awdl before 0.10.0 ships no hooks: core is installed (here
+        # by the omdrop package) and current, but gets no commands.
+        self.backend(None)
+        self.old_core(owner="omdrop", hooks=False)
+        doctor = self.doctor()
+        self.assertEqual([o["id"] for o in doctor["offers"]], ["core"], doctor)
+        self.assertTrue(doctor["offers"][0]["say"].endswith("Update it with: omdrop install-driver"),
+                        doctor["offers"][0]["say"])
+
+    def test_core_without_hooks_on_another_backend_offers_nothing(self):
+        # omdrop-owl has no hooks yet, and that isn't the user's to fix.
+        self.backend("owl")
+        self.old_core(owner="omdrop", hooks=False)
+        self.assertEqual(self.doctor()["offers"], [])
+
+    def test_install_core_leaves_a_packaged_core_to_the_package(self):
+        self.old_core(owner="omdrop")
+        code, out = self.install()
+        self.assertEqual(code, 1, out)
+        self.assertIn("comes with the omdrop package", out)
+        self.assertNotIn("makepkg", out)
 
     def test_a_core_package_from_before_the_move_off_path_is_offered_as_an_update(self):
         # omdrop-core 0.1.2 and older installed /usr/bin/omdrop and nothing at
