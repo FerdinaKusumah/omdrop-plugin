@@ -2429,6 +2429,7 @@ cmd_watch() {
         files=("${rest%% -> *}") ;;
       *) continue ;;
     esac
+    local inline=()
     for f in "${files[@]}"; do
       f="${f#"${f%%[![:space:]]*}"}"      # trim
       f="${f%"${f##*[![:space:]]}"}"
@@ -2439,9 +2440,18 @@ cmd_watch() {
         continue
       fi
       echo "omdrop watch: announcing $f"
-      "$SELF" handle "$f" &
+      # In its own transient unit, like `off` below: stopping this service
+      # (`off`, or a one-file window closing right after this) kills its whole
+      # cgroup, and a notification still decoding its preview would be lost.
+      # systemd-run returns once the unit has started. Without it, handle runs
+      # here, and a one-file window waits for it before closing.
+      if ! systemd-run --user --quiet --collect "$SELF" handle "$f" >/dev/null 2>&1; then
+        "$SELF" handle "$f" &
+        inline+=("$!")
+      fi
     done
     if (( once )) && (( ${#files[@]} )); then
+      (( ${#inline[@]} )) && wait "${inline[@]}"
       # In its OWN transient unit, not in this process. `off` calls
       # cancel_window, which stops omdrop-watch.service -- this service -- and
       # systemd kills the whole cgroup, so an in-process `off` was killed
@@ -2532,8 +2542,89 @@ launch() {
 act_open() {
   local f=$1
   if is_link_file "$f"; then cmd_open_link "$f"
-  else launch xdg-open "$f"
+  elif has_default_app "$f"; then launch xdg-open "$f"
+  else reveal_in_files "$f"
   fi
+}
+
+# Whether xdg-open has an app registered for the file's type. Without one it
+# falls back to the browser: imv registers image/heif but not image/heic, and
+# Omarchy's defaults register nothing for it, so an iPhone photo opened Chrome.
+# Without xdg-mime there is nothing to ask, and xdg-open keeps the file.
+has_default_app() {
+  command -v xdg-mime >/dev/null 2>&1 || return 0
+  local type; type=$(xdg-mime query filetype "$1" 2>/dev/null)
+  [[ -n "$type" && -n "$(xdg-mime query default "$type" 2>/dev/null)" ]]
+}
+
+# Show a received file in the file manager with it selected: the click's
+# fallback when no app is registered for the file. Nautilus is Omarchy's file
+# manager; anything else gets the folder through xdg-open, which never hands a
+# file to the browser.
+reveal_in_files() {
+  local f=$1
+  if command -v nautilus >/dev/null 2>&1; then launch nautilus --select "$f"
+  else launch xdg-open "$(dirname "$f")"
+  fi
+}
+
+# Previews live in the runtime dir: RAM, private to the user, and gone at
+# logout, so they never become a second copy of every photo received. Only the
+# last PREVIEW_KEEP stay -- enough for the toasts of a burst of photos to still
+# find their image. In Everyone mode the file comes from anyone nearby and is
+# decoded without a click, so each decode gets PREVIEW_TIMEOUT seconds.
+PREVIEW_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omdrop/previews"
+PREVIEW_KEEP=10
+PREVIEW_SIZE=512
+PREVIEW_TIMEOUT=${OMDROP_PREVIEW_TIMEOUT:-10}
+
+# A small JPEG preview for formats the notification daemon cannot decode (HEIC
+# from an iPhone). Prints the path of the preview, or nothing when none is
+# possible; a failed or timed-out decode only costs the toast its thumbnail.
+heic_preview() {
+  local f=$1 work final
+  command -v heif-convert >/dev/null 2>&1 || return 0
+  (umask 077 && mkdir -p -- "$PREVIEW_DIR") || return 0
+  # A unique name: IMG_1.heic and IMG_1.avif, or two arrivals with the same
+  # name, each keep their own preview. Arrivals are handled in parallel, so a
+  # preview is decoded and shrunk under working.*, and becomes preview.* --
+  # the only name pruning looks at -- once it is complete.
+  work=$(mktemp --suffix=.jpg "$PREVIEW_DIR/working.XXXXXX") || return 0
+  final="$PREVIEW_DIR/preview.${work#"$PREVIEW_DIR/working."}"
+  if timeout -k 1 "$PREVIEW_TIMEOUT" heif-convert -q 80 "$f" "$work" >/dev/null 2>&1 \
+     && [[ -s "$work" ]]; then
+    shrink_preview "$work"
+    mv -f -- "$work" "$final" || { rm -f -- "$work"; return 0; }
+    prune_previews
+    printf '%s\n' "$final"
+  else
+    # heif-convert names the images of a multi-image file out-1.jpg, out-2.jpg.
+    rm -f -- "$work" "${work%.jpg}"-*.jpg
+  fi
+}
+
+# heif-convert decodes at full size -- 4032x3024 for a 12 MP photo -- and the
+# toast shows a few hundred pixels. ImageMagick scales it down when present;
+# without it the full-size preview stays, still in RAM and still pruned.
+shrink_preview() {
+  local f=$1
+  command -v magick >/dev/null 2>&1 || return 0
+  if timeout -k 1 "$PREVIEW_TIMEOUT" magick "$f" -thumbnail "${PREVIEW_SIZE}x${PREVIEW_SIZE}>" \
+       -quality 80 "jpg:$f.part" >/dev/null 2>&1 && [[ -s "$f.part" ]]; then
+    mv -f -- "$f.part" "$f"
+  else
+    rm -f -- "$f.part"
+  fi
+}
+
+# Keep the newest PREVIEW_KEEP finished previews and remove the rest. Files
+# another arrival is still writing are named working.* and are left alone,
+# unless a decode that was killed left one behind more than five minutes ago.
+prune_previews() {
+  find "$PREVIEW_DIR" -maxdepth 1 -type f -name 'preview.*.jpg' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | tail -n +$((PREVIEW_KEEP + 1)) | cut -d' ' -f2- \
+    | xargs -r -d '\n' rm -f --
+  find "$PREVIEW_DIR" -maxdepth 1 -type f -name 'working.*' -mmin +5 -delete 2>/dev/null
 }
 
 # `open-link FILE`: open a link file's web page in the browser. The one entry
@@ -2831,7 +2922,12 @@ act_notify() {
   local f=$1 args=()
   copy_to_clipboard "$f"
   # Only images get a thumbnail, the way a screenshot notification does.
-  case "${f,,}" in *.png|*.jpg|*.jpeg|*.gif|*.webp|*.heic|*.avif) args+=(--image "$f") ;; esac
+  case "${f,,}" in
+    *.png|*.jpg|*.jpeg|*.gif|*.webp) args+=(--image "$f") ;;
+    *.heic|*.heif|*.avif)
+      local preview; preview=$(heic_preview "$f")
+      [[ -n "$preview" ]] && args+=(--image "$preview") ;;
+  esac
   # Same shape as omarchy-capture-screenshot: clipboard plus file, a thumbnail,
   # and the whole toast clickable. The notification service honours exactly one
   # action -- the default, fired by clicking the body -- and --exec is how
