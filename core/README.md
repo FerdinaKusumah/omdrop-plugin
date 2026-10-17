@@ -46,7 +46,7 @@ To build and install the package:
 makepkg -si
 ```
 
-`omdrop-radio` needs a backend that installs hooks in `/usr/lib/omdrop/radio/`. The Broadcom hooks are on omdrop-awdl's `feat/backend-hooks` branch. Without them, `omdrop` uses the 0.9.x `omdrop-discoverable` instead.
+`omdrop-radio` needs a backend that installs hooks in `/usr/lib/omdrop/radio/`. omdrop-awdl installs the Broadcom hooks from 0.10.0. Without them, `omdrop` uses the 0.9.x `omdrop-discoverable` instead. Either way, `omdrop install-driver` and `omdrop doctor` treat omdrop-awdl as the driver they manage: they check its version against the one the plugin pins, and `install-driver` builds that one ([radio backends](../docs/radio-backend.md#omdrop-awdls-hooks)).
 
 ## How `omdrop` finds the other programs
 

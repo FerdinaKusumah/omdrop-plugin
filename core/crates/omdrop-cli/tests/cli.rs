@@ -1171,6 +1171,123 @@ fn install_without_a_probe_still_refuses_a_machine_with_no_broadcom() {
     );
 }
 
+// omdrop-awdl 0.10.0 answers probe through its hooks as backend `awdl`, but
+// it is still the Broadcom driver install-driver builds: its version is
+// checked against the pin, and install-driver updates it.
+
+/// pacman with brcmfmac-awdl-dkms at `installed`, or without it, and no
+/// repository that carries it.
+fn with_driver(r: &Radio, installed: Option<&str>) {
+    let answer = match installed {
+        Some(v) => format!("echo 'brcmfmac-awdl-dkms {v}'"),
+        None => "exit 1".to_string(),
+    };
+    write_exec(
+        &r.f.root.join("bin/pacman"),
+        &format!("#!/bin/sh\n[ \"$1 $2\" = '-Q brcmfmac-awdl-dkms' ] || exit 1\n{answer}\n"),
+    );
+}
+
+fn awdl_hooks(missing: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "backend": "awdl", "version": "0.10.0", "contract": "0.10.0", "hooks": 1,
+        "hardware": true, "missing": missing,
+    })
+}
+
+const AWDL_RADIO: &str = "AirDrop's Wi-Fi driver is not loaded. Restart to load it.";
+
+#[test]
+fn awdl_with_an_outdated_driver_offers_install_driver_which_builds_it() {
+    let r = Radio::new();
+    r.helper(&backend_helper(Some(awdl_hooks(serde_json::json!([
+        {"id": "radio", "say": AWDL_RADIO}
+    ])))));
+    with_driver(&r, Some("0.9.0-1"));
+    let doctor = r.doctor();
+    assert_eq!(
+        doctor["missing"].as_array().unwrap()[..2],
+        [
+            serde_json::json!({"id": "driver", "say": "The Wi-Fi driver is older than the 0.9.3 this version of Omdrop needs (installed: 0.9.0-1). Update it with: omdrop install-driver"}),
+            serde_json::json!({"id": "radio", "say": AWDL_RADIO}),
+        ],
+        "{doctor}"
+    );
+    assert!(!doctor.to_string().contains(BROADCOM_SAYS), "{doctor}");
+
+    let out = r.run(&["install-driver"]);
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
+    assert!(
+        stdout.starts_with("Opening a terminal to install the driver.\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("omdrop-awdl.git") && stdout.contains("&& makepkg"),
+        "{stdout}"
+    );
+
+    // A driver pacman does not know is no newer.
+    with_driver(&r, None);
+    assert_eq!(
+        r.doctor()["missing"][0]["say"],
+        "The Wi-Fi driver is older than the 0.9.3 this version of Omdrop needs (installed: none). Update it with: omdrop install-driver"
+    );
+}
+
+#[test]
+fn awdl_with_a_current_driver_has_nothing_to_install() {
+    let mut r = Radio::new();
+    r.helper(&backend_helper(Some(awdl_hooks(serde_json::json!([])))));
+    with_driver(&r, Some("0.10.0-1"));
+    assert!(!r.ids().contains(&"driver".to_string()), "{}", r.doctor());
+    let out = r.run(&["install-driver"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    if receiver_libs_here() {
+        assert_eq!(
+            text(&out.stdout),
+            "The driver and the Python library the receiver needs are both installed and current. Nothing to do.\n"
+        );
+    }
+    // Missing receiver packages are installed without rebuilding the driver.
+    r.without_receiver_library();
+    let out = r.run(&["install-driver"]);
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
+    assert!(
+        stdout.starts_with("Opening a terminal to install the driver.\n")
+            && stdout.contains("pacman -S --needed --asdeps python-libarchive-c keyutils"),
+        "{stdout}"
+    );
+    for driver in ["brcmfmac-awdl-dkms", "makepkg", "omdrop-awdl"] {
+        assert!(!stdout.contains(driver), "{driver}: {stdout}");
+    }
+}
+
+#[test]
+fn awdl_on_hardware_it_cannot_drive_is_refused_alone() {
+    let mut r = Radio::new();
+    let mut probe = awdl_hooks(serde_json::json!([
+        {"id": "hardware", "say": "This computer has no Apple Broadcom Wi-Fi."},
+        {"id": "radio", "say": AWDL_RADIO}
+    ]));
+    probe["hardware"] = false.into();
+    r.helper(&backend_helper(Some(probe)));
+    with_driver(&r, Some("0.9.0-1"));
+    r.without_receiver_library();
+    assert_eq!(
+        r.doctor()["missing"],
+        serde_json::json!([{"id": "hardware", "say": "This computer has no Apple Broadcom Wi-Fi."}])
+    );
+    let out = r.run(&["install-driver"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        text(&out.stderr),
+        "This computer has no Apple Broadcom Wi-Fi.\n"
+    );
+    assert_eq!(text(&out.stdout), "");
+}
+
 /// The identity commands log what reached them.
 fn logging_identity(f: &Fixture) {
     std::fs::write(
@@ -1190,6 +1307,10 @@ fn the_1password_identity_follows_the_backends_contract_not_the_driver_package()
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let events = std::fs::read_to_string(&r.f.capture).unwrap();
     assert!(events.contains("identity.py import\n"), "{events}");
+    // omdrop-awdl's hooks state their package version as the contract.
+    r.helper(&backend_helper(Some(awdl_hooks(serde_json::json!([])))));
+    let out = r.run(&["identity", "1password", "import"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
 
     let mut probe = owl(serde_json::json!([]));
     probe["contract"] = "0.6.9".into();
@@ -1246,10 +1367,14 @@ fn a_missing_sender_names_the_backend_not_install_driver() {
         "The program that sends files is not installed. It comes with the radio backend. Update the package that provides it (owl): omdrop install-driver leaves it alone.\n"
     );
 
-    r.helper(&backend_helper(None));
-    let out = r.run(&["send", photo.to_str().unwrap()]);
-    assert_eq!(
-        text(&out.stderr),
-        "The program that sends files is not installed. It comes with the Wi-Fi driver package. Update it with: omdrop install-driver\n"
-    );
+    // omdrop-awdl, with or without its hooks, is what install-driver updates.
+    for helper in [None, Some(awdl_hooks(serde_json::json!([])))] {
+        r.helper(&backend_helper(helper.clone()));
+        let out = r.run(&["send", photo.to_str().unwrap()]);
+        assert_eq!(
+            text(&out.stderr),
+            "The program that sends files is not installed. It comes with the Wi-Fi driver package. Update it with: omdrop install-driver\n",
+            "{helper:?}"
+        );
+    }
 }

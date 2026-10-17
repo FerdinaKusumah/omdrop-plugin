@@ -85,8 +85,29 @@ The plugin adds its own items after the backend's: `library` (the receiver's
 packages) and `service` (the receiving service). It reports `backend` itself
 when the probe doesn't answer or the contract is too old.
 
-With a probing backend, `omdrop install-driver` installs only what belongs to
+With any other probing backend, `omdrop install-driver` installs only what belongs to
 the plugin: the receiver's packages, and its firewall rule when ufw is active.
 The backend is a package of its own, installed before the plugin can ask it
 anything, so messages that ask for a newer helper name the backend's package
 instead of `omdrop install-driver`.
+
+### omdrop-awdl's hooks
+
+omdrop-awdl 0.10.0 and later answer `probe` through their hooks in
+`/usr/lib/omdrop/radio/` as backend `awdl`, reporting `hardware` (no Broadcom
+chip) and `radio` (brcmfmac not loaded). omdrop-core treats that backend as
+the driver `omdrop install-driver` manages, as it does a helper that doesn't
+answer:
+
+- `omdrop doctor` keeps the probe's items, `hardware` first and alone, and
+  adds its own `driver` item, before the probe's, when the installed
+  `brcmfmac-awdl-dkms` is older than the version the plugin pins. That item
+  comes from Omdrop, not from the probe, so the panel offers its button; an
+  item the probe names `driver` is still shown as `backend-driver`.
+- `omdrop install-driver` builds the pinned driver when the installed one is
+  older, as well as the receiver's packages and the firewall rule. It refuses
+  with the probe's `hardware` sentence when `hardware` is false.
+- Messages that ask for a newer helper say `omdrop install-driver`.
+
+The plugin's own `bin/omdrop` asks `omdrop-discoverable`, which doesn't answer
+`probe`, so it gives omdrop-awdl the Broadcom checks either way.

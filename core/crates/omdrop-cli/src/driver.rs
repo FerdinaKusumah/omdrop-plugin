@@ -131,6 +131,9 @@ pub fn apple_broadcom_wifi() -> bool {
 // that does not is taken to be omdrop-awdl on Apple's Broadcom Wi-Fi and
 // gets the Broadcom checks, unchanged. omdrop-awdl 0.9.x answers a
 // subcommand it does not know with its usage and exit 2: "no probe".
+// omdrop-awdl 0.10.0 and later answer through their hooks as backend
+// `awdl`: their hardware and radio findings are the probe's, but the
+// package is still the Broadcom driver install-driver builds and updates.
 
 /// What the helper said when asked.
 enum Probe {
@@ -215,6 +218,18 @@ fn radio_probe() -> &'static Probe {
 
 fn probing() -> bool {
     !matches!(radio_probe(), Probe::None)
+}
+
+/// omdrop-awdl answering through its hooks: the driver package
+/// install-driver manages, whose version it checks against DRIVER_VERSION.
+fn awdl_backend() -> bool {
+    matches!(radio_probe(), Probe::Answer(_)) && probe_field("backend") == "awdl"
+}
+
+/// A backend that probes and is a package of its own, which install-driver
+/// leaves alone. One that hangs counts: it is not known to be omdrop-awdl.
+fn foreign_backend() -> bool {
+    probing() && !awdl_backend()
 }
 
 fn radio_probe_hung() -> bool {
@@ -312,10 +327,11 @@ fn backend_contract_say() -> String {
 }
 
 /// For messages that ask for a newer or missing radio helper: what provides
-/// it. `omdrop install-driver` builds omdrop-awdl; a backend that probes is
-/// a package of its own, which that command leaves alone.
+/// it. `omdrop install-driver` builds omdrop-awdl, with or without its
+/// hooks; any other backend that probes is a package of its own, which that
+/// command leaves alone.
 pub fn radio_pkg() -> &'static str {
-    if probing() {
+    if foreign_backend() {
         "radio backend"
     } else {
         "Wi-Fi driver package"
@@ -324,7 +340,7 @@ pub fn radio_pkg() -> &'static str {
 
 /// And how to update it.
 pub fn radio_update() -> String {
-    if !probing() {
+    if !foreign_backend() {
         return "Update it with: omdrop install-driver".to_string();
     }
     let backend = probe_field("backend");
@@ -458,6 +474,21 @@ pub fn driver_current() -> bool {
     installed_pkg(DRIVER_PKG).is_some_and(|v| vercmp(&v, DRIVER_VERSION).is_ge())
 }
 
+/// With omdrop-awdl's hooks installed: a driver older than the one this
+/// release pins, as the `driver` item, whose button runs install-driver.
+/// The hooks' own probe cannot tell, as it is the installed package's.
+fn driver_outdated() -> Option<(String, String)> {
+    (!driver_current()).then(|| {
+        (
+            "driver".to_string(),
+            format!(
+                "The Wi-Fi driver is older than the {DRIVER_VERSION} this version of Omdrop needs (installed: {}). Update it with: omdrop install-driver",
+                or_none(&installed_pkg(DRIVER_PKG).unwrap_or_default())
+            ),
+        )
+    })
+}
+
 const CORE_PKG: &str = "omdrop-core";
 
 /// The omdrop-core the plugin carries, as core/PKGBUILD's pkgver-pkgrel:
@@ -479,7 +510,7 @@ fn core_wanted(plugin: &Path) -> Option<String> {
 fn core_supported() -> bool {
     match radio_probe() {
         Probe::None => apple_broadcom_wifi(),
-        _ => probe_field("backend") == "awdl" && probe_field("hardware") != "false",
+        _ => awdl_backend() && probe_field("hardware") != "false",
     }
 }
 
@@ -525,8 +556,8 @@ pub fn cmd_install_core() -> i32 {
 /// Moving the Apple identity off disk needs a driver whose sender follows the
 /// identity contract: an older one finds certificate.pem missing and makes a
 /// self-signed pair under the Apple identity's names. A backend that probes
-/// states the contract it follows; otherwise the driver package's version
-/// is the contract.
+/// states the contract it follows (omdrop-awdl's hooks state their package
+/// version); otherwise the driver package's version is the contract.
 pub fn driver_identity_ready() {
     match radio_probe() {
         Probe::Hung => die(radio_probe_hung_say()),
@@ -563,6 +594,25 @@ fn service_missing() -> Option<(String, String)> {
     })
 }
 
+/// For a backend whose probe says `hardware: false`: its own `hardware`
+/// items, or the plugin's sentence when it names none.
+fn backend_hardware_missing() -> Vec<(String, String)> {
+    let mut missing: Vec<_> = probe_missing()
+        .into_iter()
+        .filter(|(id, _)| id == "hardware")
+        .collect();
+    if missing.is_empty() {
+        missing.push((
+            "hardware".to_string(),
+            format!(
+                "This computer's Wi-Fi is not one the installed radio backend ({}) can drive.",
+                probe_field("backend")
+            ),
+        ));
+    }
+    missing
+}
+
 /// What is missing, in the order it has to be fixed, one (id, sentence)
 /// each: the id is for the panel, which offers to fix the one thing it
 /// can, and the sentence is for someone holding a laptop.
@@ -579,24 +629,18 @@ pub fn prereqs_missing() -> Vec<(String, String)> {
         Probe::Answer(_) => {
             // Hardware the backend cannot drive is, again, first and alone.
             if probe_field("hardware") == "false" {
-                missing.extend(
-                    probe_missing()
-                        .into_iter()
-                        .filter(|(id, _)| id == "hardware"),
-                );
-                if missing.is_empty() {
-                    missing.push((
-                        "hardware".to_string(),
-                        format!(
-                            "This computer's Wi-Fi is not one the installed radio backend ({}) can drive.",
-                            probe_field("backend")
-                        ),
-                    ));
-                }
+                missing.extend(backend_hardware_missing());
                 return missing;
             }
             if !backend_contract_ok() {
                 missing.push(("backend".to_string(), backend_contract_say()));
+            }
+            // omdrop-awdl's hooks report what they see; how old the driver
+            // package is, against this release's pin, is Omdrop's to say. It
+            // comes as Omdrop's own `driver` item, so the panel offers its
+            // button: the probe's items still have reserved IDs renamed.
+            if awdl_backend() {
+                missing.extend(driver_outdated());
             }
             missing.extend(probe_missing());
             if !receiver_libs_installed() {
@@ -784,8 +828,14 @@ pub fn build_script(
 pub fn cmd_install_driver() -> i32 {
     let c = ctx();
     let self_q = shell_quote(&c.command_path().to_string_lossy());
-    if probing() {
+    if foreign_backend() {
         return install_for_backend(&self_q);
+    }
+    // omdrop-awdl's hooks answer for the hardware; nothing is built for a
+    // machine they say their driver cannot drive.
+    let awdl = awdl_backend();
+    if awdl && probe_field("hardware") == "false" {
+        die(backend_hardware_missing().swap_remove(0).1);
     }
     let helper = is_executable(&c.discoverable);
     if helper && driver_current() && receiver_libs_installed() {
@@ -794,7 +844,7 @@ pub fn cmd_install_driver() -> i32 {
         );
         return 0;
     }
-    if !apple_broadcom_wifi() {
+    if !awdl && !apple_broadcom_wifi() {
         die(NO_BROADCOM);
     }
     let libs_missing = !receiver_libs_installed();
@@ -821,10 +871,11 @@ pub fn cmd_install_driver() -> i32 {
     launch_install(&build, INTRO)
 }
 
-/// With a radio backend that probes, the radio is that package's business:
-/// it is installed (it answered), and it reports its own blockers through
-/// doctor. What remains is Omdrop's own part, the receiver's packages and
-/// its firewall rule, run the same way as the driver install.
+/// With a radio backend that probes and is not omdrop-awdl, the radio is
+/// that package's business: it is installed (it answered), and it reports
+/// its own blockers through doctor. What remains is Omdrop's own part, the
+/// receiver's packages and its firewall rule, run the same way as the
+/// driver install.
 fn install_for_backend(self_q: &str) -> i32 {
     // Without an answer there is no telling whether this backend is one
     // Omdrop can work with, so nothing is installed for it.
