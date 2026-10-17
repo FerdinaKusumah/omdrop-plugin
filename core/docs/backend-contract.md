@@ -191,6 +191,11 @@ an invalid answer it exits 4 with a reason on stderr. `start` refuses a
 backend whose `hooks` is not 1, or whose `hardware` is false. It exits 4 with
 the first `missing` sentence, or with a generic one.
 
+`omdrop doctor` and `omdrop install-driver` treat backend `awdl` as the
+Broadcom driver package that `install-driver` builds and updates. They add
+their own `driver` item when that package is older than the plugin's pin
+(`docs/radio-backend.md` in the plugin, "omdrop-awdl's hooks").
+
 ### `up`
 
 Bring `awdl0` up so it transmits and has an IPv6 link-local address. Exit 0
