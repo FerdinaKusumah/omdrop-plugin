@@ -2,6 +2,7 @@
 //! closing list), installing the driver in a terminal the person watches,
 //! and the one firewall rule Omdrop needs.
 
+use std::cmp::Ordering;
 use std::path::Path;
 use std::process::Command;
 use std::sync::LazyLock;
@@ -87,13 +88,24 @@ pub fn awdl_link_local() -> bool {
 
 /// What the receiver needs installed. The core receiver needs nothing; the
 /// Python one needs its archive library, probed by the API it calls, and
-/// libkeyutils.
+/// libkeyutils, found the way the receiver loads it (by soname, so Debian's
+/// multiarch directory counts). Asked of the interpreter the receiver's unit
+/// runs, not whichever python3 PATH finds first (mise, pyenv, a venv).
 pub fn receiver_libs_installed() -> bool {
     if ctx().receiver.is_some() {
         return true;
     }
-    run_quiet("python3", &["-c", "from libarchive import stream_reader"]) == 0
-        && Path::new("/usr/lib/libkeyutils.so.1").exists()
+    let python = std::env::var("OMDROP_RECEIVER_PYTHON")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "/usr/bin/python3".to_string());
+    run_quiet(
+        &python,
+        &[
+            "-c",
+            "from libarchive import stream_reader; import ctypes; ctypes.CDLL(\"libkeyutils.so.1\")",
+        ],
+    ) == 0
 }
 
 /// Broadcom (vendor 0x14e4) network hardware on PCI, where Apple's Wi-Fi
@@ -288,7 +300,7 @@ fn or_none(s: &str) -> &str {
 /// names none is taken to follow none.
 fn backend_contract_ok() -> bool {
     let contract = probe_field("contract");
-    !contract.is_empty() && vercmp(&contract, BACKEND_CONTRACT_MIN).is_some_and(|c| c >= 0)
+    !contract.is_empty() && vercmp(&contract, BACKEND_CONTRACT_MIN).is_ge()
 }
 
 fn backend_contract_say() -> String {
@@ -334,17 +346,116 @@ fn installed_pkg(name: &str) -> Option<String> {
     Some(text.rsplit(' ').next().unwrap_or_default().to_string())
 }
 
-fn vercmp(a: &str, b: &str) -> Option<i64> {
-    let (_, out) = capture("vercmp", &[a, b]);
-    String::from_utf8_lossy(&out).trim().parse().ok()
+/// pacman's version order (libalpm's `alpm_pkg_vercmp`), here rather than by
+/// running `vercmp`: Debian and Ubuntu have no `vercmp`, and treating its
+/// absence as "not older" let any backend contract through the identity
+/// check there.
+fn vercmp(a: &str, b: &str) -> Ordering {
+    if a == b {
+        return Ordering::Equal;
+    }
+    let (e1, v1, r1) = parse_evr(a);
+    let (e2, v2, r2) = parse_evr(b);
+    rpmvercmp(e1, e2)
+        .then_with(|| rpmvercmp(v1, v2))
+        .then_with(|| match (r1, r2) {
+            (Some(r1), Some(r2)) => rpmvercmp(r1, r2),
+            _ => Ordering::Equal,
+        })
+}
+
+/// `[epoch:]version[-release]`. The epoch is only leading digits before a
+/// colon, and the release starts at the last dash after them.
+fn parse_evr(s: &str) -> (&str, &str, Option<&str>) {
+    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+    let (epoch, rest) = match s[digits..].strip_prefix(':') {
+        Some(rest) if digits == 0 => ("0", rest),
+        Some(rest) => (&s[..digits], rest),
+        None => ("0", s),
+    };
+    match rest.rfind('-') {
+        Some(dash) => (epoch, &rest[..dash], Some(&rest[dash + 1..])),
+        None => (epoch, rest, None),
+    }
+}
+
+/// libalpm's `rpmvercmp`: runs of digits compare as numbers, runs of letters
+/// as strings, a number beats letters, and a longer separator run wins.
+fn rpmvercmp(a: &str, b: &str) -> Ordering {
+    if a == b {
+        return Ordering::Equal;
+    }
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (mut one, mut two) = (0, 0);
+    let (mut seg1, mut seg2) = (0, 0);
+    while one < a.len() && two < b.len() {
+        while one < a.len() && !a[one].is_ascii_alphanumeric() {
+            one += 1;
+        }
+        while two < b.len() && !b[two].is_ascii_alphanumeric() {
+            two += 1;
+        }
+        if one >= a.len() || two >= b.len() {
+            break;
+        }
+        if one - seg1 != two - seg2 {
+            return (one - seg1).cmp(&(two - seg2));
+        }
+        let numeric = a[one].is_ascii_digit();
+        let kind = |c: &u8| {
+            if numeric {
+                c.is_ascii_digit()
+            } else {
+                c.is_ascii_alphabetic()
+            }
+        };
+        seg1 = one + a[one..].iter().take_while(|c| kind(c)).count();
+        seg2 = two + b[two..].iter().take_while(|c| kind(c)).count();
+        if seg2 == two {
+            // A number against letters: the number is newer.
+            return if numeric {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            };
+        }
+        let (mut x, mut y) = (&a[one..seg1], &b[two..seg2]);
+        if numeric {
+            while x.first() == Some(&b'0') {
+                x = &x[1..];
+            }
+            while y.first() == Some(&b'0') {
+                y = &y[1..];
+            }
+            match x.len().cmp(&y.len()) {
+                Ordering::Equal => {}
+                longer => return longer,
+            }
+        }
+        match x.cmp(y) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+        one = seg1;
+        two = seg2;
+    }
+    let (rest1, rest2) = (&a[one..], &b[two..]);
+    if rest1.is_empty() && rest2.is_empty() {
+        return Ordering::Equal;
+    }
+    // Never let a trailing alpha segment beat nothing: 1.0a is older than 1.0.
+    let alpha = |s: &[u8]| s.first().is_some_and(u8::is_ascii_alphabetic);
+    if (rest1.is_empty() && !alpha(rest2)) || alpha(rest1) {
+        Ordering::Less
+    } else {
+        Ordering::Greater
+    }
 }
 
 /// Whether the installed driver is at least the one this release pins.
 /// Read from pacman, because a helper fix is invisible from outside it.
 pub fn driver_current() -> bool {
-    installed_pkg(DRIVER_PKG)
-        .and_then(|v| vercmp(&v, DRIVER_VERSION))
-        .is_some_and(|c| c >= 0)
+    installed_pkg(DRIVER_PKG).is_some_and(|v| vercmp(&v, DRIVER_VERSION).is_ge())
 }
 
 const CORE_PKG: &str = "omdrop-core";
@@ -381,7 +492,7 @@ pub fn core_offers() -> Vec<(String, String)> {
     let Some(have) = installed_pkg(CORE_PKG) else {
         return Vec::new();
     };
-    if vercmp(&have, &want).is_some_and(|c| c < 0) && core_supported() {
+    if vercmp(&have, &want).is_lt() && core_supported() {
         return vec![(
             "core".to_string(),
             format!(
@@ -421,9 +532,7 @@ pub fn driver_identity_ready() {
         Probe::Hung => die(radio_probe_hung_say()),
         Probe::Answer(_) => {
             let installed = probe_field("contract");
-            if installed.is_empty()
-                || vercmp(&installed, DRIVER_IDENTITY_VERSION).is_some_and(|c| c < 0)
-            {
+            if installed.is_empty() || vercmp(&installed, DRIVER_IDENTITY_VERSION).is_lt() {
                 die(format!(
                     "Keeping the identity in 1Password needs a radio backend that follows contract {DRIVER_IDENTITY_VERSION} or newer ({} follows {}).",
                     probe_field("backend"),
@@ -435,8 +544,7 @@ pub fn driver_identity_ready() {
         Probe::None => {}
     }
     let installed = installed_pkg(DRIVER_PKG).unwrap_or_default();
-    let too_old =
-        installed.is_empty() || vercmp(&installed, DRIVER_IDENTITY_VERSION).is_some_and(|c| c < 0);
+    let too_old = installed.is_empty() || vercmp(&installed, DRIVER_IDENTITY_VERSION).is_lt();
     if too_old {
         die(format!(
             "Keeping the identity in 1Password needs driver {DRIVER_IDENTITY_VERSION} or newer (installed: {}). Update it with: omdrop install-driver",
@@ -848,5 +956,49 @@ mod tests {
         );
         assert!(script.find("sudo pacman").unwrap() < script.find("firewall install").unwrap());
         assert!(!script.contains("makepkg"));
+    }
+
+    /// Pairs and the order pacman's own `vercmp` gives them: releases, epochs,
+    /// letters against numbers and against nothing, separators, leading zeros,
+    /// and the versions Omdrop actually compares.
+    const VERSION_ORDER: &[(&str, &str, Ordering)] = &[
+        ("1.5.0", "1.5.0", Ordering::Equal),
+        ("1.5.1", "1.5.0", Ordering::Greater),
+        ("1.5.1", "1.5", Ordering::Greater),
+        ("1.0", "1.0.0", Ordering::Less),
+        ("1.01", "1.1", Ordering::Equal),
+        ("0.10.0", "0.9.9", Ordering::Greater),
+        ("1.5.0-1", "1.5.0-2", Ordering::Less),
+        ("1.5.0-2", "1.5.1-1", Ordering::Less),
+        ("1.5", "1.5-1", Ordering::Equal),
+        ("1.5-1", "1.5", Ordering::Equal),
+        ("1.5b", "1.5", Ordering::Less),
+        ("1.5b-1", "1.5", Ordering::Less),
+        ("1.5b", "1.5.1", Ordering::Less),
+        ("1.0a", "1.0alpha", Ordering::Less),
+        ("1.0beta", "1.0rc", Ordering::Less),
+        ("1.0rc", "1.0", Ordering::Less),
+        ("1.5.a", "1.5", Ordering::Greater),
+        ("1.5.1", "1.5.b", Ordering::Greater),
+        ("2.0", "2_0", Ordering::Equal),
+        ("2.0a", "2.0.a", Ordering::Less),
+        ("2___a", "2_a", Ordering::Greater),
+        ("0:1.0", "1.0", Ordering::Equal),
+        ("1:1.0", "2.0", Ordering::Greater),
+        ("1:1.0-1", "2:1.1-1", Ordering::Less),
+        ("abc", "0.7.0", Ordering::Less),
+        ("0.8.1", "0.7.0", Ordering::Greater),
+        ("0.6.9", "0.7.0", Ordering::Less),
+        ("0.9.3-1", "0.9.3", Ordering::Equal),
+        ("0.1.1-1", "0.1.0-1", Ordering::Greater),
+        ("6.12.0-1.1", "6.12.0-1", Ordering::Greater),
+    ];
+
+    #[test]
+    fn versions_order_as_pacman_orders_them() {
+        for &(a, b, want) in VERSION_ORDER {
+            assert_eq!(vercmp(a, b), want, "{a} vs {b}");
+            assert_eq!(vercmp(b, a), want.reverse(), "{b} vs {a}");
+        }
     }
 }

@@ -797,11 +797,13 @@ fn text(b: &[u8]) -> String {
 
 /// What the Python receiver's library check sees on this machine.
 fn receiver_libs_here() -> bool {
-    Command::new("python3")
-        .args(["-c", "from libarchive import stream_reader"])
+    Command::new("/usr/bin/python3")
+        .args([
+            "-c",
+            "from libarchive import stream_reader; import ctypes; ctypes.CDLL(\"libkeyutils.so.1\")",
+        ])
         .output()
         .is_ok_and(|o| o.status.success())
-        && Path::new("/usr/lib/libkeyutils.so.1").exists()
 }
 
 #[test]
