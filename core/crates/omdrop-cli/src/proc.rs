@@ -318,6 +318,12 @@ pub fn spawn_session(cmd: &mut Command) -> io::Result<Child> {
 /// 2026-09-23: a lookup given TERM stopped advertising but went on starting
 /// probes for as long as it had peers to ask.
 pub fn stop_group(child: &mut Child) {
+    stop_group_within(child, Duration::from_secs(2));
+}
+
+/// TERM to the whole group, then KILL whatever is left after `grace`:
+/// `timeout -k GRACE`, but for every process in the group.
+pub fn stop_group_within(child: &mut Child, grace: Duration) {
     let Ok(pgid) = i32::try_from(child.id()) else {
         return;
     };
@@ -326,7 +332,8 @@ pub fn stop_group(child: &mut Child) {
         let _ = child.try_wait();
         return;
     }
-    for _ in 0..20 {
+    let until = Instant::now() + grace;
+    loop {
         // Reap the leader as it goes, or its zombie keeps the group "alive".
         let _ = child.try_wait();
         // SAFETY: as above, signal 0 only probes.
@@ -335,11 +342,52 @@ pub fn stop_group(child: &mut Child) {
             // else's group, so nothing more is sent to it.
             return;
         }
+        if Instant::now() >= until {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
     // SAFETY: as above.
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
     let _ = child.wait();
+}
+
+/// `timeout -k GRACE LIMIT cmd`, true when CMD exited 0 in time. CMD leads a
+/// process group of its own, and at the deadline the whole group goes, so
+/// nothing it started outlives the limit. `None`: no limit, as `timeout 0`.
+pub fn run_bounded(cmd: &mut Command, limit: Option<Duration>, grace: Duration) -> bool {
+    let Ok(mut child) = spawn_group(cmd) else {
+        return false;
+    };
+    match wait_cancellable(&mut child, limit.map(|l| Instant::now() + l)) {
+        Some(rc) => rc == 0,
+        None => {
+            stop_group_within(&mut child, grace);
+            false
+        }
+    }
+}
+
+/// timeout(1)'s DURATION: a non-negative number with an optional s, m, h
+/// or d. `Some(None)`: 0, no deadline. `None`: not a duration, which
+/// timeout refuses, so nothing is run.
+pub fn timeout_duration(text: &str) -> Option<Option<Duration>> {
+    let (num, unit) = match text.strip_suffix(['s', 'm', 'h', 'd']) {
+        Some(n) => (n, &text[n.len()..]),
+        None => (text, "s"),
+    };
+    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    let scale = match unit {
+        "m" => 60.0,
+        "h" => 3600.0,
+        "d" => 86400.0,
+        _ => 1.0,
+    };
+    let secs = num.parse::<f64>().ok()? * scale;
+    let limit = Duration::try_from_secs_f64(secs).ok()?;
+    Some((!limit.is_zero()).then_some(limit))
 }
 
 /// Wait for a child, polling for a cancel; `None` at the deadline.
@@ -533,5 +581,25 @@ pub fn spinner_restore_tty() {
         r.stop.store(true, Ordering::SeqCst);
         let _ = r.thread.join();
         let _ = r.tty.write_all(b"\r\x1b[K\x1b[?25h");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_timeout_reads_as_timeout_reads_it() {
+        assert_eq!(timeout_duration("5"), Some(Some(Duration::from_secs(5))));
+        assert_eq!(
+            timeout_duration("0.5"),
+            Some(Some(Duration::from_millis(500)))
+        );
+        assert_eq!(timeout_duration("2m"), Some(Some(Duration::from_secs(120))));
+        assert_eq!(timeout_duration("1s"), Some(Some(Duration::from_secs(1))));
+        assert_eq!(timeout_duration("0"), Some(None));
+        for bad in ["", "s", "-1", "five", "1x", "1.2.3", "inf", "1e3"] {
+            assert_eq!(timeout_duration(bad), None, "{bad}");
+        }
     }
 }

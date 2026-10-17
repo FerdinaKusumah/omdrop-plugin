@@ -680,9 +680,15 @@ fn handle_capturing_stdin(f: &Fixture, file: &Path, env: &[(&str, &str)]) -> (St
     (ev, std::fs::read(&stdin).unwrap_or_default())
 }
 
+/// What the clipboard's decode left in the runtime dir. The toast's previews
+/// have a directory of their own there, and their tests below.
 fn clip_dirs_left(f: &Fixture) -> Vec<PathBuf> {
     std::fs::read_dir(f.root.join("run/omdrop"))
-        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .map(|d| {
+            d.map(|e| e.unwrap().path())
+                .filter(|p| !p.ends_with("previews"))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -737,9 +743,11 @@ fn a_heic_that_will_not_decode_goes_on_the_clipboard_as_its_path() {
 #[test]
 fn a_heic_decode_that_hangs_is_cut_off_and_the_path_is_copied() {
     let f = Fixture::new();
+    // Only the clipboard's decode hangs; the toast's preview has its own
+    // limit, tested below, and fails at once here.
     write_exec(
         &f.root.join("bin/heif-convert"),
-        "#!/bin/sh\nexec sleep 60\n",
+        "#!/bin/sh\ncase \"$4\" in */omdrop/previews/*) exit 1 ;; esac\nexec sleep 60\n",
     );
     let photo = f.root.join("IMG_0003.heic");
     std::fs::write(&photo, "slow").unwrap();
@@ -750,6 +758,395 @@ fn a_heic_decode_that_hangs_is_cut_off_and_the_path_is_copied() {
     assert!(ev.contains("uwsm-app -- wl-copy\n"), "{ev}");
     assert_eq!(clip, photo.as_os_str().as_encoded_bytes());
     assert_eq!(clip_dirs_left(&f), Vec::<PathBuf>::new());
+}
+
+// ------------------------------------------------------- the toast (#57)
+//
+// The plugin's tests/test_notification.py and test_once_shutdown.py: an
+// iPhone sends photos as HEIC, which the notification daemon cannot decode,
+// so the toast gets a small JPEG preview, kept in the runtime dir and pruned.
+// A click opens the file with its app, and shows it in the file manager only
+// when no app is registered for its type -- otherwise xdg-open picks the
+// browser.
+
+/// heif-convert SRC DEST and magick SRC ... DEST: write something to DEST,
+/// and log the call. magick's DEST carries a jpg: prefix.
+const HEIF_CONVERT: &str = "printf 'heif-convert %s\\n' \"$*\" >> \"$CAPTURE\"\nfor a; do d=$a; done\nprintf jpeg > \"$d\"\n";
+const MAGICK: &str = "printf 'magick %s\\n' \"$*\" >> \"$CAPTURE\"\nfor a; do d=$a; done\nprintf small > \"${d#jpg:}\"\n";
+
+/// The click's world: only the stubs on PATH, so the host's own nautilus or
+/// xdg-mime never answers. xdg-mime takes the type from the extension, and
+/// only the types in MIME_DEFAULTS have an app; uwsm-app, the launch wrapper,
+/// logs what it was asked to start.
+fn click(f: &Fixture, file: &Path, nautilus: bool, xdg_mime: bool, defaults: &str) -> String {
+    let bin = f.root.join("bin");
+    write_exec(
+        &bin.join("uwsm-app"),
+        "#!/bin/sh\nprintf 'uwsm-app %s\\n' \"$*\" >> \"$CAPTURE\"\n",
+    );
+    if xdg_mime {
+        write_exec(
+            &bin.join("xdg-mime"),
+            "#!/bin/sh\ncase \"$2\" in\n  filetype) case \"$3\" in *.heic) echo image/heic ;; *.jpg) echo image/jpeg ;; esac ;;\n  default) case \" $MIME_DEFAULTS \" in *\" $3 \"*) echo app.desktop ;; esac ;;\nesac\n",
+        );
+    } else {
+        std::fs::remove_file(bin.join("xdg-mime")).unwrap();
+    }
+    if nautilus {
+        write_exec(&bin.join("nautilus"), "#!/bin/sh\nexit 0\n");
+    }
+    std::fs::write(file, "photo").unwrap();
+    let out = f
+        .command(&["act", "open", file.to_str().unwrap()])
+        .env("PATH", &bin)
+        .env("MIME_DEFAULTS", defaults)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::read_to_string(&f.capture).unwrap()
+}
+
+#[test]
+fn a_click_opens_a_file_that_has_an_app() {
+    let f = Fixture::new();
+    let photo = f.root.join("photo.jpg");
+    let ev = click(&f, &photo, true, true, "image/jpeg");
+    assert_eq!(ev, format!("uwsm-app -- xdg-open {}\n", photo.display()));
+}
+
+#[test]
+fn a_click_shows_a_file_without_an_app_in_the_file_manager() {
+    let f = Fixture::new();
+    let photo = f.root.join("IMG_1.heic");
+    let ev = click(&f, &photo, true, true, "image/jpeg");
+    assert_eq!(
+        ev,
+        format!("uwsm-app -- nautilus --select {}\n", photo.display())
+    );
+}
+
+#[test]
+fn without_nautilus_a_click_opens_the_folder_instead() {
+    let f = Fixture::new();
+    let photo = f.root.join("IMG_1.heic");
+    let ev = click(&f, &photo, false, true, "image/jpeg");
+    assert_eq!(ev, format!("uwsm-app -- xdg-open {}\n", f.root.display()));
+}
+
+#[test]
+fn a_click_opens_a_heic_once_an_app_is_registered_for_it() {
+    let f = Fixture::new();
+    let photo = f.root.join("IMG_1.heic");
+    let ev = click(&f, &photo, true, true, "image/jpeg image/heic");
+    assert_eq!(ev, format!("uwsm-app -- xdg-open {}\n", photo.display()));
+}
+
+#[test]
+fn without_xdg_mime_a_click_opens_the_file_as_before() {
+    let f = Fixture::new();
+    let photo = f.root.join("IMG_1.heic");
+    let ev = click(&f, &photo, true, false, "");
+    assert_eq!(ev, format!("uwsm-app -- xdg-open {}\n", photo.display()));
+}
+
+/// A Fixture whose heif-convert and magick write stand-in images.
+fn preview_fixture() -> Fixture {
+    let f = Fixture::new();
+    write_exec(
+        &f.root.join("bin/heif-convert"),
+        &format!("#!/bin/sh\n{HEIF_CONVERT}"),
+    );
+    write_exec(&f.root.join("bin/magick"), &format!("#!/bin/sh\n{MAGICK}"));
+    f
+}
+
+fn previews(f: &Fixture) -> PathBuf {
+    f.root.join("run/omdrop/previews")
+}
+
+fn previews_left(f: &Fixture) -> Vec<PathBuf> {
+    let mut left: Vec<PathBuf> = std::fs::read_dir(previews(f))
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    left.sort();
+    left
+}
+
+/// `handle` a new arrival named NAME.
+fn arrive(f: &Fixture, name: &str, env: &[(&str, &str)]) -> PathBuf {
+    let photo = f.root.join(name);
+    std::fs::write(&photo, "photo").unwrap();
+    let (out, _) = f.run(&["handle", photo.to_str().unwrap()], env);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    photo
+}
+
+/// The toasts sent so far: each one's title and its --image, if any.
+fn toasts(f: &Fixture) -> Vec<(String, Option<PathBuf>)> {
+    std::fs::read_to_string(&f.capture)
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.strip_prefix("omarchy-notification-send "))
+        .map(|l| {
+            let words: Vec<&str> = l.split(' ').collect();
+            let image = words
+                .iter()
+                .position(|w| *w == "--image")
+                .map(|i| PathBuf::from(words[i + 1]));
+            (words[2].to_string(), image)
+        })
+        .collect()
+}
+
+fn last_image(f: &Fixture) -> Option<PathBuf> {
+    toasts(f).pop().expect("no toast").1
+}
+
+#[test]
+fn a_heic_toast_carries_a_small_preview_in_the_runtime_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = preview_fixture();
+    let photo = arrive(&f, "IMG_1.heic", &[]);
+    let preview = last_image(&f).expect("no preview");
+    assert_eq!(preview.parent(), Some(previews(&f).as_path()));
+    let name = preview.file_name().unwrap().to_str().unwrap();
+    assert!(
+        name.starts_with("preview.") && name.ends_with(".jpg"),
+        "{name}"
+    );
+    assert_eq!(std::fs::read(&preview).unwrap(), b"small");
+    let ev = std::fs::read_to_string(&f.capture).unwrap();
+    let decode = format!(
+        "heif-convert -q 80 {} {}/working.",
+        photo.display(),
+        previews(&f).display()
+    );
+    assert!(ev.contains(&decode), "{ev}");
+    assert!(ev.contains(" -thumbnail 512x512> -quality 80 jpg:"), "{ev}");
+    let mode = std::fs::metadata(previews(&f))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+    assert_eq!(previews_left(&f), vec![preview]);
+}
+
+#[test]
+fn the_preview_stays_full_size_without_imagemagick() {
+    let f = preview_fixture();
+    write_exec(&f.root.join("bin/magick"), "#!/bin/sh\nexit 127\n");
+    arrive(&f, "IMG_1.heic", &[]);
+    let preview = last_image(&f).expect("no preview");
+    assert_eq!(std::fs::read(&preview).unwrap(), b"jpeg");
+    assert_eq!(previews_left(&f), vec![preview]);
+}
+
+#[test]
+fn previews_of_the_same_name_do_not_overwrite_each_other() {
+    let f = preview_fixture();
+    arrive(&f, "IMG_1.heic", &[]);
+    let first = last_image(&f).expect("no preview");
+    arrive(&f, "IMG_1.avif", &[]);
+    let second = last_image(&f).expect("no preview");
+    assert_ne!(first, second);
+    assert!(first.exists() && second.exists());
+    assert_eq!(previews_left(&f).len(), 2);
+}
+
+#[test]
+fn only_the_newest_previews_are_kept_and_nothing_else_is_touched() {
+    let f = preview_fixture();
+    std::fs::create_dir_all(previews(&f)).unwrap();
+    let other = previews(&f).join("other.jpg");
+    std::fs::write(&other, "mine").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&other)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
+    for n in 0..12 {
+        arrive(&f, &format!("IMG_{n}.heic"), &[]);
+        // Distinct mtimes, so the newest are unambiguous.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let kept: Vec<PathBuf> = previews_left(&f)
+        .into_iter()
+        .filter(|p| *p != other)
+        .collect();
+    assert_eq!(kept.len(), 10, "{kept:?}");
+    let images: Vec<PathBuf> = toasts(&f).into_iter().filter_map(|t| t.1).collect();
+    assert_eq!(images.len(), 12);
+    for (n, image) in images.iter().enumerate() {
+        assert_eq!(kept.contains(image), n >= 2, "toast {n}: {image:?}");
+    }
+    assert!(other.exists());
+}
+
+#[test]
+fn a_preview_still_being_decoded_survives_other_arrivals() {
+    // Arrivals are handled in parallel. One photo's preview decodes slowly
+    // while eleven others arrive and finish; their pruning must not delete
+    // the file the slow decode has already written into.
+    let f = preview_fixture();
+    write_exec(
+        &f.root.join("bin/heif-convert"),
+        &format!(
+            "#!/bin/sh\n{HEIF_CONVERT}case \"$3$4\" in *SLOW*/omdrop/previews/*) sleep 2 ;; esac\n"
+        ),
+    );
+    let slow = f.root.join("SLOW.heic");
+    std::fs::write(&slow, "photo").unwrap();
+    let decoding = spawn_with(&f, &["handle", slow.to_str().unwrap()], &[]);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for n in 0..11 {
+        arrive(&f, &format!("IMG_{n}.heic"), &[]);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let out = finish_within(decoding, std::time::Duration::from_secs(30));
+    assert!(out.status.success());
+    let (_, image) = toasts(&f)
+        .into_iter()
+        .find(|t| t.0 == "SLOW.heic")
+        .expect("no toast for the slow photo");
+    let image = image.expect("the slow photo's toast lost its preview");
+    assert!(image.exists());
+    assert_eq!(image.parent(), Some(previews(&f).as_path()));
+}
+
+#[test]
+fn a_preview_left_behind_by_a_killed_decode_is_cleaned_up() {
+    let f = preview_fixture();
+    std::fs::create_dir_all(previews(&f)).unwrap();
+    let stale = previews(&f).join("working.Old456.jpg");
+    let fresh = previews(&f).join("working.New789.jpg");
+    std::fs::write(&stale, "half").unwrap();
+    std::fs::write(&fresh, "half").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
+        .unwrap();
+    arrive(&f, "IMG_9.heic", &[]);
+    assert!(!stale.exists());
+    assert!(fresh.exists(), "a decode still in progress lost its file");
+}
+
+#[test]
+fn a_heic_toast_still_appears_when_the_conversion_fails() {
+    let f = preview_fixture();
+    // A multi-image file's outputs beside the target, then a failure.
+    write_exec(
+        &f.root.join("bin/heif-convert"),
+        "#!/bin/sh\nprintf x > \"${4%.jpg}-1.jpg\"\nexit 1\n",
+    );
+    arrive(&f, "IMG_2.heic", &[]);
+    let toasts = toasts(&f);
+    assert_eq!(toasts.len(), 1);
+    assert_eq!(toasts[0].1, None);
+    assert_eq!(previews_left(&f), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_conversion_that_hangs_is_cut_off_with_everything_it_started() {
+    // Only the preview's decode hangs. The clipboard's own HEIC-to-JPEG
+    // decode (#62) has a fixed 10 s limit of its own, which this test does
+    // not measure, so it fails at once.
+    let f = preview_fixture();
+    let pid_file = f.root.join("sleeper");
+    write_exec(
+        &f.root.join("bin/heif-convert"),
+        &format!(
+            "#!/bin/sh\ncase \"$4\" in */omdrop/previews/*) sleep 30 & echo $! > '{}'; wait ;; esac\nexit 1\n",
+            pid_file.display()
+        ),
+    );
+    let start = std::time::Instant::now();
+    arrive(&f, "IMG_3.heic", &[("OMDROP_PREVIEW_TIMEOUT", "1")]);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "took {:?}",
+        start.elapsed()
+    );
+    let toasts = toasts(&f);
+    assert_eq!(toasts.len(), 1);
+    assert_eq!(toasts[0].1, None);
+    assert_eq!(previews_left(&f), Vec::<PathBuf>::new());
+    // The decoder's own child went with it.
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    let stat = format!("/proc/{}/stat", pid.trim());
+    let gone = (0..20).any(|_| {
+        let state = std::fs::read_to_string(&stat).unwrap_or_default();
+        let dead = state
+            .rsplit_once(") ")
+            .is_none_or(|(_, rest)| rest.starts_with('Z'));
+        if !dead {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        dead
+    });
+    assert!(gone, "the decoder's child outlived the cut-off");
+}
+
+#[test]
+fn a_jpeg_toast_uses_the_file_itself() {
+    let f = preview_fixture();
+    let photo = arrive(&f, "photo.jpg", &[]);
+    assert_eq!(last_image(&f), Some(photo));
+    let ev = std::fs::read_to_string(&f.capture).unwrap();
+    assert!(!ev.contains("heif-convert"), "{ev}");
+}
+
+#[test]
+fn the_notification_outlives_the_watcher_too() {
+    // `handle` decodes a HEIC preview before it notifies. Inside the
+    // watcher's cgroup, the close that follows a one-file window killed it,
+    // and the photo arrived with no notification at all.
+    let f = Fixture::new();
+    let file = arrival(&f, "arrived.jpg");
+    let journal = format!("{TS}upload ABC: stored arrived.jpg");
+    let (out, ev) = f.run(&["watch", "--once"], &[("JOURNAL", &journal)]);
+    assert!(out.status.success());
+    let unit = format!(
+        "systemd-run --user --quiet --collect {} handle {}",
+        f.omdrop.display(),
+        file.display()
+    );
+    assert!(ev.lines().any(|l| l == unit), "{ev}");
+    assert!(!ev.contains("omarchy-notification-send"), "{ev}");
+}
+
+#[test]
+fn without_systemd_run_the_close_waits_for_the_notification() {
+    // handle then runs inside the watcher, and the close would kill it.
+    let f = Fixture::new();
+    write_exec(
+        &f.root.join("bin/systemd-run"),
+        "#!/bin/sh\nprintf 'systemd-run %s\\n' \"$*\" >> \"$CAPTURE\"\ncase \"$*\" in *\" handle \"*) exit 1 ;; esac\nexit 0\n",
+    );
+    // The toast takes a moment, so a close that does not wait for it is
+    // logged first.
+    write_exec(
+        &f.root.join("bin/omarchy-notification-send"),
+        "#!/bin/sh\nsleep 1\nprintf 'omarchy-notification-send %s\\n' \"$*\" >> \"$CAPTURE\"\n",
+    );
+    arrival(&f, "arrived.jpg");
+    let journal = format!("{TS}upload ABC: stored arrived.jpg");
+    let (out, ev) = f.run(&["watch", "--once"], &[("JOURNAL", &journal)]);
+    assert!(out.status.success());
+    assert!(
+        first(&ev, "omarchy-notification-send") < first(&ev, " off --force"),
+        "{ev}"
+    );
 }
 
 // ------------------------------------------------------------ radio backends

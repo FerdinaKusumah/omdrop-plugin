@@ -12,12 +12,14 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 use crate::config::effective_dir;
 use crate::ctx::{UNIT, ctx};
-use crate::proc::{code_of, run_quiet};
+use crate::proc::{code_of, run_bounded, run_quiet, timeout_duration};
 use crate::util::{
-    basename, die, dirname, env_nonempty, glob_match, have, home, is_symlink, lexists, tildify,
+    basename, create_unique, die, dirname, env_nonempty, glob_match, have, home, is_symlink,
+    lexists, mkdir_private, tildify,
 };
 
 /// These arrive from whoever is nearby; a real one is a few hundred bytes.
@@ -205,10 +207,56 @@ fn open_link(f: &Path) -> i32 {
 
 fn act_open(f: &Path) -> i32 {
     if is_link_file(f.as_os_str()) {
-        open_link(f)
-    } else {
+        return open_link(f);
+    }
+    if has_default_app(f) {
         launch(&[OsStr::new("xdg-open"), f.as_os_str()], None, None);
-        0
+    } else {
+        reveal_in_files(f);
+    }
+    0
+}
+
+/// Whether xdg-open has an app registered for the file's type. Without one it
+/// falls back to the browser: imv registers image/heif but not image/heic, and
+/// Omarchy's defaults register nothing for it, so an iPhone photo opened Chrome.
+/// Without xdg-mime there is nothing to ask, and xdg-open keeps the file.
+fn has_default_app(f: &Path) -> bool {
+    if !have("xdg-mime") {
+        return true;
+    }
+    let ask = |args: &[&OsStr]| {
+        let (_, out) = crate::proc::capture("xdg-mime", args);
+        crate::util::strip_trailing_newlines_bytes(&out).to_vec()
+    };
+    let kind = ask(&[OsStr::new("query"), OsStr::new("filetype"), f.as_os_str()]);
+    !kind.is_empty()
+        && !ask(&[
+            OsStr::new("query"),
+            OsStr::new("default"),
+            OsStr::from_bytes(&kind),
+        ])
+        .is_empty()
+}
+
+/// Show a received file in the file manager with it selected: the click's
+/// fallback when no app is registered for the file. Nautilus is Omarchy's file
+/// manager; anything else gets the folder through xdg-open, which never hands a
+/// file to the browser.
+fn reveal_in_files(f: &Path) {
+    if have("nautilus") {
+        launch(
+            &[
+                OsStr::new("nautilus"),
+                OsStr::new("--select"),
+                f.as_os_str(),
+            ],
+            None,
+            None,
+        );
+    } else {
+        let dir = dirname(f.as_os_str());
+        launch(&[OsStr::new("xdg-open"), dir.as_os_str()], None, None);
     }
 }
 
@@ -298,26 +346,161 @@ fn heif_to_jpeg(f: &Path) -> Option<(PathBuf, PathBuf)> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let ok = match crate::proc::spawn_group(&mut cmd) {
-        Ok(mut child) => {
-            let deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(HEIF_DECODE_SECS);
-            match crate::proc::wait_cancellable(&mut child, Some(deadline)) {
-                Some(rc) => rc == 0,
-                None => {
-                    crate::proc::stop_group(&mut child);
-                    false
-                }
-            }
-        }
-        Err(_) => false,
-    };
-    let usable = ok && std::fs::metadata(&out).is_ok_and(|m| m.is_file() && m.len() > 0);
-    if usable {
+    let limit = Some(Duration::from_secs(HEIF_DECODE_SECS));
+    if run_bounded(&mut cmd, limit, Duration::from_secs(2)) && non_empty_file(&out) {
         Some((dir, out))
     } else {
         let _ = std::fs::remove_dir_all(&dir);
         None
+    }
+}
+
+/// `[[ -s FILE ]]`: it exists and has something in it.
+fn non_empty_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() > 0)
+}
+
+/// Previews live in the runtime dir: RAM, private to the user, and gone at
+/// logout, so they never become a second copy of every photo received. Only
+/// the last PREVIEW_KEEP stay -- enough for the toasts of a burst of photos
+/// to still find their image.
+const PREVIEW_KEEP: usize = 10;
+/// heif-convert decodes at full size -- 4032x3024 for a 12 MP photo -- and
+/// the toast shows a few hundred pixels.
+const PREVIEW_SIZE: &str = "512x512>";
+/// A `working.*` this old was left behind by a decode that was killed.
+const PREVIEW_STALE: Duration = Duration::from_secs(5 * 60);
+/// `timeout -k 1`: how long a decode past its limit gets between TERM and KILL.
+const PREVIEW_GRACE: Duration = Duration::from_secs(1);
+
+/// In Everyone mode the file comes from anyone nearby and is decoded without
+/// a click, so each step of a preview gets OMDROP_PREVIEW_TIMEOUT, timeout(1)'s
+/// DURATION, default 10 s. `None`: not a duration, which timeout refuses.
+fn preview_timeout() -> Option<Option<Duration>> {
+    timeout_duration(&env_nonempty("OMDROP_PREVIEW_TIMEOUT").unwrap_or_else(|| "10".to_string()))
+}
+
+/// A small JPEG preview for formats the notification daemon cannot decode
+/// (HEIC from an iPhone): its path, or `None` when none is possible. A failed
+/// or timed-out decode only costs the toast its thumbnail. The file is
+/// untrusted, so it reaches heif-convert as an argument, never through a shell.
+fn heic_preview(f: &Path) -> Option<PathBuf> {
+    if !have("heif-convert") {
+        return None;
+    }
+    let limit = preview_timeout()?;
+    let dir = ctx().state_dir().join("previews");
+    mkdir_private(&dir).ok()?;
+    // A unique name: IMG_1.heic and IMG_1.avif, or two arrivals with the same
+    // name, each keep their own preview. Arrivals are handled in parallel, so
+    // a preview is decoded and shrunk under working.*, and becomes preview.*
+    // -- the only name pruning looks at -- once it is complete.
+    let (work, file) = create_unique(&dir, "working.", ".jpg", 0o600).ok()?;
+    drop(file);
+    let id = work
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|n| n.strip_prefix("working."))
+        .and_then(|n| n.strip_suffix(".jpg"))
+        .unwrap_or_default()
+        .to_string();
+    let done = dir.join(format!("preview.{id}.jpg"));
+    let mut cmd = Command::new("heif-convert");
+    cmd.args([OsStr::new("-q"), OsStr::new("80")])
+        .arg(f)
+        .arg(&work)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if !(run_bounded(&mut cmd, limit, PREVIEW_GRACE) && non_empty_file(&work)) {
+        let _ = std::fs::remove_file(&work);
+        // heif-convert names the images of a multi-image file out-1.jpg, out-2.jpg.
+        let extra = format!("working.{id}-");
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.as_bytes();
+                if name.starts_with(extra.as_bytes()) && name.ends_with(b".jpg") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        return None;
+    }
+    shrink_preview(&work, limit);
+    if std::fs::rename(&work, &done).is_err() {
+        let _ = std::fs::remove_file(&work);
+        return None;
+    }
+    prune_previews(&dir);
+    Some(done)
+}
+
+/// Scale a preview down when ImageMagick is present; without it the
+/// full-size preview stays, still in RAM and still pruned.
+fn shrink_preview(work: &Path, limit: Option<Duration>) {
+    if !have("magick") {
+        return;
+    }
+    let mut part = work.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let mut target = OsString::from("jpg:");
+    target.push(&part);
+    let mut cmd = Command::new("magick");
+    cmd.arg(work)
+        .args(["-thumbnail", PREVIEW_SIZE, "-quality", "80"])
+        .arg(&target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if !(run_bounded(&mut cmd, limit, PREVIEW_GRACE)
+        && non_empty_file(&part)
+        && std::fs::rename(&part, work).is_ok())
+    {
+        let _ = std::fs::remove_file(&part);
+    }
+}
+
+/// Keep the newest PREVIEW_KEEP finished previews and remove the rest. Files
+/// another arrival is still writing are named working.* and are left alone,
+/// unless a decode that was killed left one behind more than five minutes
+/// ago. Nothing else in the directory is touched.
+fn prune_previews(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    let mut finished = Vec::new();
+    for entry in entries.flatten() {
+        // Not followed: only regular files count, as `find -type f`.
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.as_bytes();
+        if name.len() >= "preview..jpg".len()
+            && name.starts_with(b"preview.")
+            && name.ends_with(b".jpg")
+        {
+            finished.push((mtime, entry.path()));
+        } else if name.starts_with(b"working.")
+            && now
+                .duration_since(mtime)
+                .is_ok_and(|age| age > PREVIEW_STALE)
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    finished.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in finished.into_iter().skip(PREVIEW_KEEP) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -383,9 +566,16 @@ pub fn cmd_handle(args: &[OsString]) -> i32 {
     let f = Path::new(f);
     copy_to_clipboard(f);
     let lower = f.as_os_str().to_string_lossy().to_lowercase();
-    let image = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".avif"]
-        .iter()
-        .any(|e| lower.ends_with(e));
+    // Only images get a thumbnail, the way a screenshot notification does. A
+    // HEIC, HEIF or AVIF gets a JPEG preview, since the notification daemon
+    // cannot decode one.
+    let image = if is_image(&lower).is_some() {
+        Some(f.to_path_buf())
+    } else if is_heif(&lower) {
+        heic_preview(f)
+    } else {
+        None
+    };
     let where_ = tildify(&dirname(f.as_os_str()).to_string_lossy());
     let what = if have("wl-copy") {
         format!("Copied to clipboard, saved to {where_}/")
@@ -398,9 +588,9 @@ pub fn cmd_handle(args: &[OsString]) -> i32 {
         basename(f.as_os_str()),
         format!("{what} (or click this)").into(),
     ];
-    if image {
+    if let Some(image) = image {
         argv.push("--image".into());
-        argv.push(f.as_os_str().to_owned());
+        argv.push(image.into_os_string());
     }
     argv.extend([
         OsString::from("--exec"),
@@ -461,23 +651,39 @@ pub fn cmd_watch(args: &[String]) -> i32 {
         for name in missing {
             errln!("omdrop watch: receiver named '{name}', which is not a file in {dir}; ignored");
         }
+        let self_exe = ctx().command_path().as_os_str();
         for path in &found {
             outln!("omdrop watch: announcing {}", path.display());
-            match Command::new(ctx().command_path())
-                .arg("handle")
-                .arg(path)
-                .spawn()
-            {
+            // In its own transient unit, like `off` below: stopping this
+            // service (`off`, or a one-file window closing right after this)
+            // kills its whole cgroup, and a notification still decoding its
+            // preview would be lost. systemd-run returns once the unit has
+            // started. Without it, handle runs here, and a one-file window
+            // waits for it before closing.
+            let unit: [&OsStr; 6] = [
+                "--user".as_ref(),
+                "--quiet".as_ref(),
+                "--collect".as_ref(),
+                self_exe,
+                "handle".as_ref(),
+                path.as_os_str(),
+            ];
+            if run_quiet("systemd-run", &unit) == 0 {
+                continue;
+            }
+            match Command::new(self_exe).arg("handle").arg(path).spawn() {
                 Ok(c) => handlers.push(c),
                 Err(e) => errln!("omdrop: {}: {e}", ctx().command_path().display()),
             }
         }
         if once && !found.is_empty() {
+            for mut handler in handlers.drain(..) {
+                let _ = handler.wait();
+            }
             // In its OWN transient unit, not in this process: `off` stops
             // omdrop-watch.service -- this service -- and systemd kills the
             // whole cgroup, so an in-process `off` died partway and left the
             // receiver listening for a second file (twice, 2026-09-17).
-            let self_exe = ctx().command_path().as_os_str();
             let args: [&OsStr; 6] = [
                 "--user".as_ref(),
                 "--quiet".as_ref(),

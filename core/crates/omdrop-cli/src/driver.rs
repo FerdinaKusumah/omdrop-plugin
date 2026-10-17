@@ -6,14 +6,14 @@ use std::cmp::Ordering;
 use std::path::Path;
 use std::process::Command;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::ctx::ctx;
 use crate::identity::{Out, id};
-use crate::proc::{Captured, capture, capture_bounded, run, run_quiet};
+use crate::proc::{Captured, capture, capture_bounded, run, run_quiet, timeout_duration};
 use crate::util::{
     die, env_nonempty, have, home, is_executable, py_json, shell_quote, strip_trailing_newlines,
 };
@@ -152,28 +152,6 @@ fn probe_timeout() -> String {
     env_nonempty("OMDROP_PROBE_TIMEOUT").unwrap_or_else(|| "5".to_string())
 }
 
-/// timeout(1)'s DURATION: a non-negative number with an optional s, m, h
-/// or d. `Some(None)`: 0, no deadline. `None`: not a duration, which
-/// timeout refuses, so nothing is asked.
-fn parse_duration(text: &str) -> Option<Option<Duration>> {
-    let (num, unit) = match text.strip_suffix(['s', 'm', 'h', 'd']) {
-        Some(n) => (n, &text[n.len()..]),
-        None => (text, "s"),
-    };
-    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-        return None;
-    }
-    let scale = match unit {
-        "m" => 60.0,
-        "h" => 3600.0,
-        "d" => 86400.0,
-        _ => 1.0,
-    };
-    let secs = num.parse::<f64>().ok()? * scale;
-    let limit = Duration::try_from_secs_f64(secs).ok()?;
-    Some((!limit.is_zero()).then_some(limit))
-}
-
 /// The answer, if it is one: a JSON object whose `backend` is a string with
 /// something in it besides whitespace.
 fn parse_probe(out: &[u8]) -> Option<Map<String, Value>> {
@@ -195,7 +173,7 @@ fn ask_probe() -> Probe {
     if !is_executable(helper) {
         return Probe::None;
     }
-    let Some(limit) = parse_duration(&probe_timeout()) else {
+    let Some(limit) = timeout_duration(&probe_timeout()) else {
         return Probe::None;
     };
     let mut cmd = Command::new(helper);
@@ -950,21 +928,6 @@ fn launch_install(build: &str, intro: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_probe_timeout_reads_as_timeout_reads_it() {
-        assert_eq!(parse_duration("5"), Some(Some(Duration::from_secs(5))));
-        assert_eq!(
-            parse_duration("0.5"),
-            Some(Some(Duration::from_millis(500)))
-        );
-        assert_eq!(parse_duration("2m"), Some(Some(Duration::from_secs(120))));
-        assert_eq!(parse_duration("1s"), Some(Some(Duration::from_secs(1))));
-        assert_eq!(parse_duration("0"), Some(None));
-        for bad in ["", "s", "-1", "five", "1x", "1.2.3", "inf", "1e3"] {
-            assert_eq!(parse_duration(bad), None, "{bad}");
-        }
-    }
 
     #[test]
     fn a_probe_needs_a_backend_name() {
