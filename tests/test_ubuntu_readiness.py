@@ -28,8 +28,8 @@ class UbuntuReadinessTests(unittest.TestCase):
         self.env = {**os.environ, 'PATH': str(self.root),
                     'PYTHONPATH': str(self.root), 'CALLS': str(self.root / 'calls')}
         (self.root / 'python3').symlink_to(sys.executable)
-        # coreutils, which every distribution has; vercmp only where a test adds it.
-        for tool in ('sort', 'head'):
+        # coreutils and sed, which every distribution has; vercmp only where a test adds it.
+        for tool in ('sort', 'head', 'sed'):
             (self.root / tool).symlink_to(shutil.which(tool))
 
     def command(self, name, script):
@@ -54,7 +54,8 @@ probe_field() {{ [ "$1" = contract ] && echo "{contract}" || echo owl; }}
 die() {{ printf '%s\\n' "$*" >&2; exit 1; }}''')
 
     def test_contracts_compare_without_vercmp(self):
-        for version in ('0.7.0', '0.7.1', '0.8.1', '0.10.0', '1.0'):
+        # 0.07.0 is 0.7.0 to vercmp; sort -V alone ranks it lower.
+        for version in ('0.7.0', '0.07.0', '0.7.1', '0.8.1', '0.10.0', '1.0'):
             with self.subTest(version=version):
                 result = self.contract(version)
                 self.assertEqual(result.returncode, 0, result.stderr)

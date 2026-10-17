@@ -593,16 +593,21 @@ cmd_identity() {
 # Whether version $1 is $2 or newer. pacman's vercmp where it exists, which
 # also orders pkgrel and epoch; otherwise coreutils' sort -V, which every
 # distribution has and which orders plain dotted versions, such as the
-# contract a backend reports, the same way. Anything else is not taken as
-# newer there: sort -V would put "abc" after "0.7.0", where vercmp puts it
-# before. Debian and Ubuntu have no vercmp, and a bare $(vercmp ...) there is
-# an arithmetic syntax error that reads as "not older".
+# contract a backend reports, the same way once leading zeros are gone
+# (vercmp reads 0.07.0 as 0.7.0; sort -V breaks that tie on the text).
+# Anything else is not taken as newer there: sort -V would put "abc" after
+# "0.7.0", where vercmp puts it before. Debian and Ubuntu have no vercmp, and
+# a bare $(vercmp ...) there is an arithmetic syntax error that reads as "not
+# older".
 version_ge() {
   if command -v vercmp >/dev/null 2>&1; then
     (( $(vercmp "$1" "$2") >= 0 ))
   else
     [[ "$1" =~ ^[0-9]+(\.[0-9]+)*(-[0-9]+(\.[0-9]+)*)?$ ]] || return 1
-    [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$2" ]]
+    local have want
+    have=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$1")
+    want=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$2")
+    [[ "$(printf '%s\n%s\n' "$have" "$want" | sort -V | head -n 1)" == "$want" ]]
   fi
 }
 
