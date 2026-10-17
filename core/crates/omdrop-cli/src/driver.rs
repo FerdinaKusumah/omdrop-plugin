@@ -26,11 +26,11 @@ pub const DRIVER_PKG: &str = "brcmfmac-awdl-dkms";
 /// drift away from what anyone reviewed. It also appears literally in the
 /// build script below, because a baseline scanner cannot resolve a variable;
 /// a test keeps the two equal.
-pub const DRIVER_COMMIT: &str = "fe05b2c575db063c388abb0c31c840c03b1b6412";
+pub const DRIVER_COMMIT: &str = "e7891ab56957dde46f134c1991e4e4717f94d2e4";
 /// The package version that commit builds. install-driver rebuilds any older
 /// installed driver: a fix inside the helper changes nothing a feature probe
 /// could see.
-const DRIVER_VERSION: &str = "0.9.3";
+const DRIVER_VERSION: &str = "0.10.0";
 /// The first driver whose sender, send-to-peer and advertiser follow the
 /// identity contract. Moving the identity into 1Password needs it.
 const DRIVER_IDENTITY_VERSION: &str = "0.7.0";
@@ -811,7 +811,7 @@ pub fn build_script(
             // source they built as root, /tmp is RAM on this hardware, and a
             // later version is a pull rather than a fresh clone.
             build.push_str(&format!(
-                "\nmkdir -p \"$(dirname '{src}')\"\nif [ -d '{src}/.git' ]; then\n  git -C '{src}' fetch --quiet origin\nelse\n  git clone --quiet {DRIVER_REPO} '{src}'\nfi\necho 'Building driver commit {DRIVER_COMMIT}'\ngit -C '{src}' checkout --detach fe05b2c575db063c388abb0c31c840c03b1b6412 && makepkg --dir '{src}' -si"
+                "\nmkdir -p \"$(dirname '{src}')\"\nif [ -d '{src}/.git' ]; then\n  git -C '{src}' fetch --quiet origin\nelse\n  git clone --quiet {DRIVER_REPO} '{src}'\nfi\necho 'Building driver commit {DRIVER_COMMIT}'\ngit -C '{src}' checkout --detach e7891ab56957dde46f134c1991e4e4717f94d2e4 && makepkg --dir '{src}' -si"
             ));
         }
     }

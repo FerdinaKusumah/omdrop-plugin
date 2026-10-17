@@ -1228,7 +1228,7 @@ fn awdl_with_an_outdated_driver_offers_install_driver_which_builds_it() {
     assert_eq!(
         doctor["missing"].as_array().unwrap()[..2],
         [
-            serde_json::json!({"id": "driver", "say": "The Wi-Fi driver is older than the 0.9.3 this version of Omdrop needs (installed: 0.9.0-1). Update it with: omdrop install-driver"}),
+            serde_json::json!({"id": "driver", "say": "The Wi-Fi driver is older than the 0.10.0 this version of Omdrop needs (installed: 0.9.0-1). Update it with: omdrop install-driver"}),
             serde_json::json!({"id": "radio", "say": AWDL_RADIO}),
         ],
         "{doctor}"
@@ -1251,7 +1251,7 @@ fn awdl_with_an_outdated_driver_offers_install_driver_which_builds_it() {
     with_driver(&r, None);
     assert_eq!(
         r.doctor()["missing"][0]["say"],
-        "The Wi-Fi driver is older than the 0.9.3 this version of Omdrop needs (installed: none). Update it with: omdrop install-driver"
+        "The Wi-Fi driver is older than the 0.10.0 this version of Omdrop needs (installed: none). Update it with: omdrop install-driver"
     );
 }
 
@@ -1356,7 +1356,7 @@ fn a_current_driver_without_a_probe_still_gets_the_firewall_rule_while_ufw_is_ac
     let r = Radio::new();
     r.helper(&backend_helper(None));
     on_a_mac(&r);
-    with_driver(&r, Some("0.9.3-1"));
+    with_driver(&r, Some("0.10.0-1"));
     with_ufw_active(&r);
     assert_installs_only_the_firewall_rule(&r);
 }
@@ -1371,7 +1371,7 @@ fn a_current_driver_with_ufw_inactive_has_nothing_to_do() {
         let r = Radio::new();
         r.helper(&backend_helper(probe.clone()));
         on_a_mac(&r);
-        with_driver(&r, Some("0.9.3-1"));
+        with_driver(&r, Some("0.10.0-1"));
         write_exec(&r.f.root.join("bin/ufw"), "#!/bin/sh\nexit 0\n");
         let out = r.run(&["install-driver"]);
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
