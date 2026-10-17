@@ -941,7 +941,7 @@ pub fn cmd_setup() -> i32 {
     }
     let offers = crate::driver::core_offers();
     if !offers.is_empty() {
-        outln!("\nOptional:");
+        outln!("\nTo do:");
         for (_, say) in &offers {
             outln!("  - {say}");
         }

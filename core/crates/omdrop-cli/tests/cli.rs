@@ -950,10 +950,7 @@ fn an_installed_core_older_than_the_plugins_is_offered_an_update() {
     );
     assert!(!r.ids().contains(&"core".to_string()), "{doctor}");
     let out = text(&r.run(&["doctor"]).stdout);
-    assert!(
-        out.contains("\nOptional:\n  - omdrop-core 0.1.0-1"),
-        "{out}"
-    );
+    assert!(out.contains("\nTo do:\n  - omdrop-core 0.1.0-1"), "{out}");
 }
 
 #[test]

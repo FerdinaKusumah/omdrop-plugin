@@ -140,7 +140,7 @@ exit 0
 
     def test_the_text_doctor_lists_the_offer_apart_from_blockers(self):
         out = self.omdrop("doctor").stdout
-        self.assertRegex(out, r"(?s)\nOptional:\n  - omdrop-core.*omdrop install-core")
+        self.assertRegex(out, r"(?s)\nTo do:\n  - omdrop-core.*going away.*omdrop install-core")
 
     def old_core(self, owner=None):
         # An installed core that answers `version` with one older than CORE_MIN.

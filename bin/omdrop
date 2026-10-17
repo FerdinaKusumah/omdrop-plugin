@@ -802,7 +802,7 @@ cmd_setup() {
     printf '\nReady. Turn receiving on from the bar, or run: omdrop on\n'
   fi
   if (( ${#offers[@]} )); then
-    printf '\nOptional:\n'
+    printf '\nTo do:\n'
     printf -- '  - %s\n' "${offers[@]#*$'\t'}"
   fi
   skills_offer
@@ -1002,7 +1002,7 @@ print(json.dumps({"ready": not missing,
     printf 'Ready to receive.\n'
   fi
   if (( ${#offers[@]} )); then
-    printf '\nOptional:\n'
+    printf '\nTo do:\n'
     printf -- '  - %s\n' "${offers[@]#*$'\t'}"
   fi
   # Which identity Apple devices will see, and anything left behind. Reported,
@@ -1242,7 +1242,8 @@ core_supported() {
   fi
 }
 
-# Optional, never a blocker: the Python version receives as well. Not offered
+# Not a blocker, so receiving keeps working until it is installed, but not
+# optional either: the Python version is going away. Not offered
 # to someone who chose the Python version by name. This script runs only while
 # no usable core is installed, or when OMDROP_IMPLEMENTATION=python; a usable
 # core reports its own updates.
@@ -1279,7 +1280,7 @@ core_offers() {
     printf 'core\t%s\n' "The installed omdrop-core ($have) is older than the $want this version of Omdrop needs, so Omdrop is running its Python version instead. Update it with: omdrop install-core"
     return 0
   fi
-  printf 'core\t%s\n' "omdrop-core, the Rust version of Omdrop, is not installed. It is optional; install it with: omdrop install-core"
+  printf 'core\t%s\n' "omdrop-core, the Rust version of Omdrop, is not installed. The Python version Omdrop is running instead is going away; install omdrop-core with: omdrop install-core"
 }
 
 # Installed from a repository that carries this version or newer, and otherwise

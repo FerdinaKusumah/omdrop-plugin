@@ -721,7 +721,7 @@ pub fn cmd_doctor(args: &[String]) -> i32 {
         }
     }
     if !offers.is_empty() {
-        outln!("\nOptional:");
+        outln!("\nTo do:");
         for (_, say) in &offers {
             outln!("  - {say}");
         }
