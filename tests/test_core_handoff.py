@@ -1,23 +1,36 @@
-"""`bin/omdrop` hands every command to an installed omdrop-core.
+"""`bin/omdrop` hands every command to an installed omdrop-core it can use.
 
 The panel, the PATH link and the systemd units all run this script, so this
 one hand-off is what moves a user to core. It must pass the arguments through
 untouched and keep `$0`, which core uses to find this plugin; it must stay out
-of the way when `OMDROP_IMPLEMENTATION=python` asks for the bash, and when
-core is not installed; `rust` must not fall back silently; an unknown value
-is refused; and it must never hand off to itself.
+of the way when `OMDROP_IMPLEMENTATION=python` asks for the bash, when core is
+not installed, and when the installed core is older than CORE_MIN or will not
+say its version; `rust` must not fall back silently; an unknown value is
+refused; and it must never hand off to itself.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OMDROP = ROOT / "bin" / "omdrop"
+CORE_MIN = re.search(r"^CORE_MIN=(\S+)$", OMDROP.read_text(), re.M).group(1)
+
+
+def older(version):
+    """A version just below VERSION: its last number lowered, or dropped."""
+    parts = [int(p) for p in version.split(".")]
+    while parts and parts[-1] == 0:
+        parts.pop()
+    parts[-1] -= 1
+    return ".".join(map(str, parts)) or "0"
 
 
 class CoreHandoffTests(unittest.TestCase):
@@ -25,16 +38,31 @@ class CoreHandoffTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.core = Path(self.tmp.name) / "omdrop-core"
-        # A stand-in for /usr/bin/omdrop: report how it was called.
-        self.core.write_text('#!/bin/bash\nprintf "core argv0=%s args=" "$0"\n'
+        # A stand-in for /usr/bin/omdrop: say its version as core does, then
+        # report how it was called. An empty CORE_VERSION says none, and
+        # CORE_HANGS makes `version` never return.
+        self.core.write_text('#!/bin/bash\n'
+                             '[ "$1" = version ] && [ -n "$CORE_HANGS" ] && exec sleep 60\n'
+                             '[ -n "$CORE_VERSION" ] && echo "omdrop-core $CORE_VERSION"\n'
+                             'printf "core argv0=%s args=" "$0"\n'
                              'printf "[%s]" "$@"\necho\nexit 7\n')
         self.core.chmod(0o755)
-        self.env = {k: v for k, v in os.environ.items() if k != "OMDROP_IMPLEMENTATION"}
-        self.env["OMDROP_CORE"] = str(self.core)
+        self.env = {k: v for k, v in os.environ.items()
+                    if k not in ("OMDROP_IMPLEMENTATION", "CORE_HANGS")}
+        self.env.update(OMDROP_CORE=str(self.core), CORE_VERSION=CORE_MIN)
 
     def run_omdrop(self, *args, **env):
         return subprocess.run([str(OMDROP), *args], env={**self.env, **env},
-                              capture_output=True, text=True, timeout=30)
+                              cwd=self.tmp.name, capture_output=True, text=True, timeout=30)
+
+    def assert_handed_off(self, run):
+        self.assertEqual(run.returncode, 7, run.stderr)
+        self.assertIn("core argv0", run.stdout)
+
+    def assert_ran_here(self, run):
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue(run.stdout.startswith("omdrop "), run.stdout)
+        self.assertNotIn("core argv0", run.stdout)
 
     def test_installed_core_gets_the_command_and_its_args_untouched(self):
         run = self.run_omdrop("send", "--to", "a b", "x")
@@ -45,22 +73,36 @@ class CoreHandoffTests(unittest.TestCase):
         # Core finds the plugin through the path it was run as. A shebang
         # script cannot see argv[0] (the kernel puts the interpreter there),
         # so a real executable stands in: Python keeps it in sys.orig_argv.
+        # Asked its version first, `python3 version` runs the script of that
+        # name in the working directory.
+        (Path(self.tmp.name) / "version").write_text(f'print("omdrop-core {CORE_MIN}")\n')
         python = Path(sys.executable).resolve()
         run = self.run_omdrop("-c", "import sys; print(sys.orig_argv[0])",
                               OMDROP_CORE=str(python))
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), str(OMDROP))
 
+    def test_a_core_at_the_minimum_or_newer_gets_the_command(self):
+        for version in (CORE_MIN, CORE_MIN + ".1", "9.9.9"):
+            with self.subTest(version=version):
+                self.assert_handed_off(self.run_omdrop("version", CORE_VERSION=version))
+
+    def test_a_core_older_than_the_minimum_gets_nothing(self):
+        self.assert_ran_here(self.run_omdrop("version", CORE_VERSION=older(CORE_MIN)))
+
+    def test_a_core_that_will_not_say_its_version_gets_nothing(self):
+        self.assert_ran_here(self.run_omdrop("version", CORE_VERSION=""))
+
+    def test_a_core_that_hangs_when_asked_its_version_gets_nothing(self):
+        started = time.monotonic()
+        self.assert_ran_here(self.run_omdrop("version", CORE_HANGS="1"))
+        self.assertLess(time.monotonic() - started, 10)
+
     def test_python_keeps_the_bash(self):
-        run = self.run_omdrop("version", OMDROP_IMPLEMENTATION="python")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertTrue(run.stdout.startswith("omdrop "), run.stdout)
-        self.assertNotIn("core argv0", run.stdout)
+        self.assert_ran_here(self.run_omdrop("version", OMDROP_IMPLEMENTATION="python"))
 
     def test_rust_uses_core(self):
-        run = self.run_omdrop("version", OMDROP_IMPLEMENTATION="rust")
-        self.assertEqual(run.returncode, 7, run.stderr)
-        self.assertIn("core argv0", run.stdout)
+        self.assert_handed_off(self.run_omdrop("version", OMDROP_IMPLEMENTATION="rust"))
 
     def test_rust_without_core_is_an_error_not_a_fallback(self):
         absent = str(Path(self.tmp.name) / "absent")
@@ -68,6 +110,13 @@ class CoreHandoffTests(unittest.TestCase):
         self.assertEqual(run.returncode, 2)
         self.assertEqual(run.stdout, "")
         self.assertIn("omdrop-core is not installed", run.stderr)
+
+    def test_rust_with_an_old_core_is_an_error_not_a_fallback(self):
+        run = self.run_omdrop("version", OMDROP_IMPLEMENTATION="rust",
+                              CORE_VERSION=older(CORE_MIN))
+        self.assertEqual(run.returncode, 2)
+        self.assertEqual(run.stdout, "")
+        self.assertIn(f"older than the {CORE_MIN} this version of Omdrop needs", run.stderr)
 
     def test_an_unknown_value_is_refused(self):
         run = self.run_omdrop("version", OMDROP_IMPLEMENTATION="pyhton")
@@ -77,16 +126,24 @@ class CoreHandoffTests(unittest.TestCase):
                          'omdrop: OMDROP_IMPLEMENTATION must be python or rust, not "pyhton"\n')
 
     def test_no_core_installed_runs_the_bash(self):
-        run = self.run_omdrop("version", OMDROP_CORE=str(Path(self.tmp.name) / "absent"))
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertTrue(run.stdout.startswith("omdrop "), run.stdout)
+        self.assert_ran_here(self.run_omdrop("version",
+                                             OMDROP_CORE=str(Path(self.tmp.name) / "absent")))
 
     def test_a_core_path_that_is_this_script_does_not_loop(self):
         link = Path(self.tmp.name) / "omdrop"
         link.symlink_to(OMDROP)
-        run = self.run_omdrop("version", OMDROP_CORE=str(link))
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertTrue(run.stdout.startswith("omdrop "), run.stdout)
+        self.assert_ran_here(self.run_omdrop("version", OMDROP_CORE=str(link)))
+
+    def test_the_plugin_hands_off_to_its_own_core(self):
+        # A CORE_MIN above core/'s own version would send no command to the
+        # core this plugin builds.
+        cargo = (ROOT / "core" / "Cargo.toml").read_text()
+        workspace = re.search(r'^\[workspace\.package\][^\[]*?^version = "([^"]+)"',
+                              cargo, re.M | re.S).group(1)
+        run = subprocess.run(["vercmp", workspace, CORE_MIN], capture_output=True, text=True)
+        if run.returncode != 0:
+            self.skipTest("needs pacman's vercmp")
+        self.assertGreaterEqual(int(run.stdout), 0, f"core/ is {workspace}, CORE_MIN {CORE_MIN}")
 
 
 if __name__ == "__main__":

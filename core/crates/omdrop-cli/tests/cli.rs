@@ -445,6 +445,29 @@ fn version_names_the_plugin_and_this_program() {
     assert!(out.stderr.is_empty());
 }
 
+/// The plugin's bin/omdrop asks core its version before handing a command to
+/// it, running it directly, where it finds no plugin. It reads the
+/// `omdrop-core <version>` line on stdout, so that line must not depend on
+/// finding one, and must carry the workspace version the plugin's CORE_MIN is
+/// compared against.
+#[test]
+fn version_reports_this_program_without_a_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_omdrop"))
+        .arg("version")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        format!("omdrop-core {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
 fn spawn_with(f: &Fixture, args: &[&str], env: &[(&str, &str)]) -> std::process::Child {
     let mut cmd = f.command(args);
     for (k, v) in env {
