@@ -378,7 +378,7 @@ pub fn atomic_write(path: &Path, prefix: &str, content: &[u8], mode: u32) -> io:
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let (tmp, mut file) = create_unique(dir, prefix, mode)?;
+    let (tmp, mut file) = create_unique(dir, prefix, "", mode)?;
     let result = file.write_all(content).and_then(|()| file.sync_all());
     drop(file);
     if let Err(e) =
@@ -392,10 +392,16 @@ pub fn atomic_write(path: &Path, prefix: &str, content: &[u8], mode: u32) -> io:
     })
 }
 
-/// `mktemp DIR/PREFIXXXXXXX`: a new file nobody else can have opened.
-pub fn create_unique(dir: &Path, prefix: &str, mode: u32) -> io::Result<(PathBuf, std::fs::File)> {
+/// `mktemp --suffix=SUFFIX DIR/PREFIXXXXXXX`: a new file nobody else can
+/// have opened.
+pub fn create_unique(
+    dir: &Path,
+    prefix: &str,
+    suffix: &str,
+    mode: u32,
+) -> io::Result<(PathBuf, std::fs::File)> {
     for _ in 0..100 {
-        let name = format!("{prefix}{}", random_suffix());
+        let name = format!("{prefix}{}{suffix}", random_suffix());
         let path = dir.join(name);
         match std::fs::OpenOptions::new()
             .read(true)

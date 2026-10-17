@@ -1024,7 +1024,8 @@ fn peers_stream(cmd: &mut Command) -> i32 {
 /// at once, so nothing is left behind however we end.
 fn anonymous_file() -> Option<std::fs::File> {
     let dir = crate::util::env_nonempty("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".to_string());
-    let (path, file) = crate::util::create_unique(Path::new(&dir), "omdrop-peers.", 0o600).ok()?;
+    let (path, file) =
+        crate::util::create_unique(Path::new(&dir), "omdrop-peers.", "", 0o600).ok()?;
     let _ = std::fs::remove_file(path);
     Some(file)
 }
