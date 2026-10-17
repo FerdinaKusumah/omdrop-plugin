@@ -173,6 +173,31 @@ class PreviewTests(NotificationFixture):
         self.assertIsNotNone(preview, "the slow photo's toast lost its preview")
         self.assertTrue(preview.exists())
 
+    def test_a_preview_whose_shrink_timed_out_survives_newer_previews(self):
+        # A shrink that times out leaves the decode's older time on the
+        # preview, and ten newer previews finish meanwhile; pruning must still
+        # keep the preview this toast is about to show.
+        self.stub("heif-convert",
+                  'printf "heif-convert|%s\\n" "$*" >> "$LOG"; for a; do d=$a; done\n'
+                  'case "$*" in *SLOW*) printf slow > "$d" ;; *) printf jpeg > "$d" ;; esac')
+        self.stub("magick", 'case "$(cat "$1")" in slow) exec sleep 30 ;; esac\n' + MAGICK)
+        slow = self.root / "SLOW.heic"
+        slow.write_bytes(b"photo")
+        decoding = subprocess.Popen([OMDROP, "handle", str(slow)],
+                                    env=dict(self.env, OMDROP_PREVIEW_TIMEOUT="5"),
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.5)
+        for n in range(10):
+            self.arrive(f"IMG_{n}.heic")
+            time.sleep(0.01)
+        self.assertIsNone(decoding.poll(), "the slow shrink ended before the others finished")
+        self.assertEqual(decoding.wait(timeout=30), 0)
+
+        toast = [line for line in self.logged("notify|") if "SLOW.heic" in line][0].split()
+        self.assertIn("--image", toast, "the slow photo's toast lost its preview")
+        preview = Path(toast[toast.index("--image") + 1])
+        self.assertTrue(preview.exists(), "pruned before its toast showed it")
+
     def test_a_preview_left_behind_by_a_killed_decode_is_cleaned_up(self):
         self.previews.mkdir(parents=True)
         stale = self.previews / "working.Old456.jpg"

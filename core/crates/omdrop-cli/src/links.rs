@@ -428,6 +428,13 @@ fn heic_preview(f: &Path) -> Option<PathBuf> {
         return None;
     }
     shrink_preview(&work, limit);
+    // Pruning goes by when a preview was finished. A shrink that failed or
+    // timed out leaves the decode's older time, and the newer previews of a
+    // burst would prune this one before its toast could show it.
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(&work)
+        .and_then(|f| f.set_modified(SystemTime::now()));
     if std::fs::rename(&work, &done).is_err() {
         let _ = std::fs::remove_file(&work);
         return None;

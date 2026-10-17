@@ -2594,6 +2594,10 @@ heic_preview() {
   if timeout -k 1 "$PREVIEW_TIMEOUT" heif-convert -q 80 "$f" "$work" >/dev/null 2>&1 \
      && [[ -s "$work" ]]; then
     shrink_preview "$work"
+    # Pruning goes by when a preview was finished. A shrink that failed or
+    # timed out leaves the decode's older time, and the newer previews of a
+    # burst would prune this one before its toast could show it.
+    touch -- "$work" 2>/dev/null
     mv -f -- "$work" "$final" || { rm -f -- "$work"; return 0; }
     prune_previews
     printf '%s\n' "$final"

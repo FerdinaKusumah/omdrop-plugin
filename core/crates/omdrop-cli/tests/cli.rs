@@ -1023,6 +1023,46 @@ fn a_preview_still_being_decoded_survives_other_arrivals() {
 }
 
 #[test]
+fn a_preview_whose_shrink_timed_out_survives_newer_previews() {
+    // A shrink that times out leaves the decode's older time on the preview,
+    // and ten newer previews finish meanwhile; pruning must still keep the
+    // preview this toast is about to show.
+    let f = preview_fixture();
+    write_exec(
+        &f.root.join("bin/heif-convert"),
+        "#!/bin/sh\nfor a; do d=$a; done\ncase \"$*\" in *SLOW*) printf slow > \"$d\" ;; *) printf jpeg > \"$d\" ;; esac\n",
+    );
+    write_exec(
+        &f.root.join("bin/magick"),
+        &format!("#!/bin/sh\ncase \"$(cat \"$1\")\" in slow) exec sleep 30 ;; esac\n{MAGICK}"),
+    );
+    let slow = f.root.join("SLOW.heic");
+    std::fs::write(&slow, "photo").unwrap();
+    let mut decoding = spawn_with(
+        &f,
+        &["handle", slow.to_str().unwrap()],
+        &[("OMDROP_PREVIEW_TIMEOUT", "5")],
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for n in 0..10 {
+        arrive(&f, &format!("IMG_{n}.heic"), &[]);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        decoding.try_wait().unwrap().is_none(),
+        "the slow shrink ended before the others finished"
+    );
+    let out = finish_within(decoding, std::time::Duration::from_secs(30));
+    assert!(out.status.success());
+    let (_, image) = toasts(&f)
+        .into_iter()
+        .find(|t| t.0 == "SLOW.heic")
+        .expect("no toast for the slow photo");
+    let image = image.expect("the slow photo's toast lost its preview");
+    assert!(image.exists(), "pruned before its toast showed it");
+}
+
+#[test]
 fn a_preview_left_behind_by_a_killed_decode_is_cleaned_up() {
     let f = preview_fixture();
     std::fs::create_dir_all(previews(&f)).unwrap();
