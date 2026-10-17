@@ -61,6 +61,8 @@ cargo fmt --check
 
 `core/PKGBUILD`'s `pkgver` and `pkgrel` are how `omdrop install-core` and `omdrop doctor` tell whether an installed core matches the plugin. Bump one of them in any release that changes `core/`, or users keep the older core.
 
+`bin/omdrop` hands commands only to a core at least `CORE_MIN`, which it reads from the installed core's own `omdrop version` line rather than from pacman. Below that, or when the version can't be read, it runs the bash and Python programs, and `doctor` says the core is too old and names what updates it. When the plugin starts relying on something new in core, raise `CORE_MIN` to that version, and bump `pkgver` in `core/PKGBUILD` and `core/Cargo.toml` together. A `pkgrel` bump alone doesn't change the version core reports.
+
 New development goes into `core/` only. The bash and Python programs remain as the fallback for installs without omdrop-core, are not developed further, and will be removed at 1.0.0, so a pull request that changes them will usually be asked to make the change in Rust instead. There are two exceptions. Security fixes for the bash and Python programs are welcome, because installs without omdrop-core still run them. Installing omdrop-core (`omdrop install-core`, and `doctor` offering it) lives in `bin/omdrop`, because it has to run before core exists; core's own `install-core` runs that one.
 
 ### Receiver changes

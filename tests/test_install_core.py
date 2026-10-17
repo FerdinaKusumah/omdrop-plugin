@@ -42,9 +42,11 @@ class InstallCoreTests(unittest.TestCase):
         tmp = Path(self.tmp.name)
         self.bin = tmp / "bin"
         self.bin.mkdir()
-        # pacman answers from CORE_INSTALLED (pacman -Q) and CORE_REPO
-        # (pacman -Si); unset means absent.
+        # pacman answers from CORE_INSTALLED (pacman -Q), CORE_REPO (pacman
+        # -Si) and CORE_OWNER (pacman -Qqo, the package /usr/bin/omdrop is
+        # from); unset means absent.
         self.command("pacman", """#!/bin/sh
+if [ "$1" = -Qqo ]; then [ -n "$CORE_OWNER" ] || exit 1; echo "$CORE_OWNER"; exit 0; fi
 [ "$2" = omdrop-core ] || exit 1
 case "$1" in
   -Q) [ -n "$CORE_INSTALLED" ] || exit 1; echo "omdrop-core $CORE_INSTALLED" ;;
@@ -69,7 +71,8 @@ exit 0
         (self.broadcom / "class").write_text("0x028000\n")
         self.backend(None)
         self.env = {k: v for k, v in os.environ.items()
-                    if k not in ("OMDROP_IMPLEMENTATION", "CORE_INSTALLED", "CORE_REPO", "RECEIVING")}
+                    if k not in ("OMDROP_IMPLEMENTATION", "CORE_INSTALLED", "CORE_REPO",
+                                 "CORE_OWNER", "RECEIVING")}
         self.env.update(PATH=f"{self.bin}:{self.env['PATH']}",
                         HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / ".config"),
@@ -138,6 +141,39 @@ exit 0
     def test_the_text_doctor_lists_the_offer_apart_from_blockers(self):
         out = self.omdrop("doctor").stdout
         self.assertRegex(out, r"(?s)\nOptional:\n  - omdrop-core.*omdrop install-core")
+
+    def old_core(self, owner=None):
+        # An installed core that answers `version` with one older than CORE_MIN.
+        core = self.bin / "core"
+        core.write_text("#!/bin/sh\necho 'omdrop-core 0.0.1'\nexit 7\n")
+        core.chmod(0o755)
+        self.env["OMDROP_CORE"] = str(core)
+        if owner:
+            self.env["CORE_OWNER"] = owner
+
+    def test_a_core_too_old_for_this_plugin_is_reported_and_blocks_nothing(self):
+        # omdrop-awdl's hooks, whose probe reports nothing missing, so the
+        # radio this machine happens to have or lack is out of the answer.
+        self.backend("awdl")
+        self.old_core(owner="omdrop-core")
+        self.env["CORE_INSTALLED"] = "0.0.1-1"
+        doctor = self.doctor()
+        self.assertTrue(doctor["ready"], doctor)
+        self.assertEqual([o["id"] for o in doctor["offers"]], ["core"], doctor)
+        say = doctor["offers"][0]["say"]
+        self.assertIn("The installed omdrop-core (0.0.1) is older than the", say)
+        self.assertIn("running its Python version instead", say)
+        self.assertTrue(say.endswith("Update it with: omdrop install-core"), say)
+
+    def test_a_too_old_core_from_another_package_names_that_package(self):
+        for owner, update in (("omdrop-owl", "Update the omdrop-owl package, which provides it."),
+                              (None, "Update the package that provides it.")):
+            with self.subTest(owner=owner):
+                self.env.pop("CORE_OWNER", None)
+                self.old_core(owner=owner)
+                say = self.doctor()["offers"][0]["say"]
+                self.assertTrue(say.endswith(update), say)
+                self.assertNotIn("install-core", say)
 
     # --- install-core ---------------------------------------------------------
 
