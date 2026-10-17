@@ -6,7 +6,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before making any code change. It lists 
 
 Omdrop is moving from bash and Python to Rust. **All new development goes into the Rust version in `core/`.** Until 1.0.0, this repository still holds both implementations of the same programs:
 
-|Program|Current (shipped)|Rust, in `core/`|
+|Program|Bash and Python (fallback)|Rust, in `core/`|
 |---|---|---|
 |The `omdrop` command|`bin/omdrop`, `bin/pick.py`|`core/crates/omdrop-cli`|
 |The receiver|`bin/airdrop-serve.py`|`core/crates/omdrop-receiver`|
@@ -14,6 +14,8 @@ Omdrop is moving from bash and Python to Rust. **All new development goes into t
 |Sender, advertisers, root helper|in the radio backend (omdrop-awdl, omdrop-owl)|`core/crates/omdrop-send`, `omdrop-adv`, `omdrop-radio`|
 
 The panel (`Panel.qml` and the other QML files), the agent skill (`skills/`) and the link handler belong to the plugin only; they have no Rust counterpart.
+
+The Rust version is the default on Macs with omdrop-awdl: `omdrop setup` and `omdrop doctor` offer it there, `omdrop install-core` installs it, and the plugin then hands it every command. Machines without it, including every omdrop-owl machine until core has been tested there, run the bash and Python programs.
 
 Epic #73 tracks the migration. Rust becomes the only implementation in 1.0.0, once this plugin, omdrop-awdl and omdrop-owl all run on it.
 
@@ -26,6 +28,7 @@ Epic #73 tracks the migration. Rust becomes the only implementation in 1.0.0, on
 - **Never run core from this checkout as root, and never point a polkit action or a systemd unit at it.** Core is built and installed as its own package (`omdrop install-core`, or `makepkg -si` in `core/`). Its root helper must sit at a fixed, root-owned path, or any user could gain root through it.
 - **Bump `core/PKGBUILD`'s `pkgver` or `pkgrel` in any release that changes `core/`.** It is how `install-core` and `doctor` tell an installed core is older than the plugin's.
 - **Raise `CORE_MIN` in `bin/omdrop` when the plugin starts relying on something new in core,** together with a `pkgver` bump in `core/PKGBUILD` and `core/Cargo.toml`. Core reports only its `pkgver`, so a `pkgrel` bump can't be required.
+- **Pin the omdrop-awdl driver in both stacks at once:** `DRIVER_COMMIT`, `DRIVER_VERSION` and the literal commit in the build script, in `bin/omdrop` and in `core/crates/omdrop-cli/src/driver.rs`. Core runs `install-driver`, so a new pin also needs a core `pkgver` bump and `CORE_MIN` raised to it.
 - **Radio backends talk to core through hooks**, described in `core/docs/backend-contract.md`. Hooks ship with the backend (omdrop-awdl, omdrop-owl), not with core. A change to the contract affects every backend, so propose it in an issue first.
 
 ## Safety
