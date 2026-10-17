@@ -484,7 +484,9 @@ plugin_dir() {
 # in the keyring, and the receiver reads it through libkeyutils.
 RECEIVER_PKGS="python-libarchive-c keyutils"
 receiver_libs_installed() {
-  python3 -c 'from libarchive import stream_reader; import ctypes; ctypes.CDLL("libkeyutils.so.1")' >/dev/null 2>&1
+  # The interpreter share/airdrop-receiver.service runs, not whichever python3
+  # PATH finds first (mise, pyenv, a venv), which may lack these packages.
+  "${OMDROP_RECEIVER_PYTHON:-/usr/bin/python3}" -c 'from libarchive import stream_reader; import ctypes; ctypes.CDLL("libkeyutils.so.1")' >/dev/null 2>&1
 }
 
 # The identity this computer presents to Apple devices: its certificate and
@@ -588,6 +590,27 @@ cmd_identity() {
   esac
 }
 
+# Whether version $1 is $2 or newer. pacman's vercmp where it exists, which
+# also orders pkgrel and epoch; otherwise coreutils' sort -V, which every
+# distribution has and which orders plain dotted versions, such as the
+# contract a backend reports, the same way once leading zeros are gone
+# (vercmp reads 0.07.0 as 0.7.0; sort -V breaks that tie on the text).
+# Anything else is not taken as newer there: sort -V would put "abc" after
+# "0.7.0", where vercmp puts it before. Debian and Ubuntu have no vercmp, and
+# a bare $(vercmp ...) there is an arithmetic syntax error that reads as "not
+# older".
+version_ge() {
+  if command -v vercmp >/dev/null 2>&1; then
+    (( $(vercmp "$1" "$2") >= 0 ))
+  else
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)*(-[0-9]+(\.[0-9]+)*)?$ ]] || return 1
+    local have want
+    have=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$1")
+    want=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$2")
+    [[ "$(printf '%s\n%s\n' "$have" "$want" | sort -V | head -n 1)" == "$want" ]]
+  fi
+}
+
 # Moving the Apple identity off disk needs a driver whose sender follows the
 # identity contract. An older sender finds certificate.pem missing and makes
 # a self-signed pair under the Apple identity's names.
@@ -597,14 +620,14 @@ driver_identity_ready() {
     radio_probe_hung && die "$(radio_probe_hung_say)"
     # A backend states which omdrop-awdl helper contract it follows.
     installed=$(probe_field contract)
-    if [[ -z "$installed" ]] || (( $(vercmp "$installed" "$DRIVER_IDENTITY_VERSION") < 0 )); then
+    if [[ -z "$installed" ]] || ! version_ge "$installed" "$DRIVER_IDENTITY_VERSION"; then
       die "Keeping the identity in 1Password needs a radio backend that follows contract $DRIVER_IDENTITY_VERSION or newer ($(probe_field backend) follows ${installed:-none})."
     fi
     return 0
   fi
   installed=$(pacman -Q "$DRIVER_PKG" 2>/dev/null) || installed=
   installed=${installed##* }
-  if [[ -z "$installed" ]] || (( $(vercmp "$installed" "$DRIVER_IDENTITY_VERSION") < 0 )); then
+  if [[ -z "$installed" ]] || ! version_ge "$installed" "$DRIVER_IDENTITY_VERSION"; then
     die "Keeping the identity in 1Password needs driver $DRIVER_IDENTITY_VERSION or newer (installed: ${installed:-none}). Update it with: omdrop install-driver"
   fi
 }
@@ -850,12 +873,7 @@ for m in json.loads(os.environ["PROBE"]).get("missing") or []:
 backend_contract_ok() {
   local contract
   contract=$(probe_field contract)
-  [[ -n "$contract" ]] || return 1
-  if command -v vercmp >/dev/null 2>&1; then
-    (( $(vercmp "$contract" "$BACKEND_CONTRACT_MIN") >= 0 ))
-  else
-    dpkg --compare-versions "$contract" ge "$BACKEND_CONTRACT_MIN"
-  fi
+  [[ -n "$contract" ]] && version_ge "$contract" "$BACKEND_CONTRACT_MIN"
 }
 
 backend_contract_say() {
