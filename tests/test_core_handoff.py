@@ -140,10 +140,10 @@ class CoreHandoffTests(unittest.TestCase):
         cargo = (ROOT / "core" / "Cargo.toml").read_text()
         workspace = re.search(r'^\[workspace\.package\][^\[]*?^version = "([^"]+)"',
                               cargo, re.M | re.S).group(1)
-        run = subprocess.run(["vercmp", workspace, CORE_MIN], capture_output=True, text=True)
-        if run.returncode != 0:
-            self.skipTest("needs pacman's vercmp")
-        self.assertGreaterEqual(int(run.stdout), 0, f"core/ is {workspace}, CORE_MIN {CORE_MIN}")
+        # Both are plain dotted numbers, so tuples order them as vercmp does.
+        number = lambda v: tuple(int(p) for p in v.split("."))
+        self.assertGreaterEqual(number(workspace), number(CORE_MIN),
+                                f"core/ is {workspace}, CORE_MIN {CORE_MIN}")
 
 
 if __name__ == "__main__":

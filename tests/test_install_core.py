@@ -152,6 +152,9 @@ exit 0
             self.env["CORE_OWNER"] = owner
 
     def test_a_core_too_old_for_this_plugin_is_reported_and_blocks_nothing(self):
+        # omdrop-awdl's hooks, whose probe reports nothing missing, so the
+        # radio this machine happens to have or lack is out of the answer.
+        self.backend("awdl")
         self.old_core(owner="omdrop-core")
         self.env["CORE_INSTALLED"] = "0.0.1-1"
         doctor = self.doctor()
