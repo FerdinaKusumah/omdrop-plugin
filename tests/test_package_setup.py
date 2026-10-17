@@ -38,8 +38,9 @@ class PackageSetupTests(unittest.TestCase):
         self.bin.mkdir()
         self.calls = tmp / "calls"
         log = '#!/bin/sh\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$CALLS"\n'
-        for name in ("omarchy-shell", "omarchy-plugin-enable"):
-            self.command(name, log)
+        self.command("omarchy-shell", log)
+        # ENABLE_RC makes adding the widget fail.
+        self.command("omarchy-plugin-enable", log + 'exit "${ENABLE_RC:-0}"\n')
         # The receiver's unit installs; nothing is active.
         self.command("systemctl", '#!/bin/sh\ncase "$*" in *is-active*) exit 3 ;; esac\nexit 0\n')
         self.env = {k: v for k, v in os.environ.items() if k != "OMDROP_IMPLEMENTATION"}
@@ -124,6 +125,39 @@ class PackageSetupTests(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout)
         self.assertEqual((self.target / "marker").read_text(), "git clone")
         self.assertEqual(self.asides(), [])
+
+    @unittest.skipUnless(SCRIPT, "needs script(1)")
+    def test_end_of_input_keeps_the_previous_installation(self):
+        # Ctrl-D at the question is No; only an empty line is Yes.
+        self.previous_clone()
+        run = self.terminal_setup("\x04")
+        self.assertEqual(run.returncode, 0, run.stdout)
+        self.assertEqual((self.target / "marker").read_text(), "git clone")
+        self.assertEqual(self.asides(), [])
+
+    def test_a_failed_widget_add_is_retried_until_it_works_and_not_after(self):
+        run = self.setup_(ENABLE_RC="1")
+        self.assertIn("The next omdrop setup tries again", run.stderr)
+        self.setup_()
+        self.setup_()
+        # Once on the failed run, once when it worked, and never again: a user
+        # who removes the widget keeps it removed.
+        self.assertEqual(self.calls_made().count("omarchy-plugin-enable"), 2)
+
+    def test_a_packaged_setup_leaves_the_path_link_alone(self):
+        # /usr/bin/omdrop is the command. A link to an older copy keeps
+        # pointing at the path under ~/.config, which the package's link
+        # takes over once the user agrees.
+        local_bin = self.home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        old = self.target / "bin" / "omdrop"
+        (local_bin / "omdrop").symlink_to(old)
+        self.assertEqual(self.setup_().returncode, 0)
+        self.assertEqual(Path(os.readlink(local_bin / "omdrop")), old)
+
+    def test_a_fresh_packaged_setup_adds_no_path_link(self):
+        self.assertEqual(self.setup_().returncode, 0)
+        self.assertFalse(os.path.lexists(self.home / ".local" / "bin" / "omdrop"))
 
 
 if __name__ == "__main__":

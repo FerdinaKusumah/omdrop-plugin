@@ -38,10 +38,10 @@ Once the `omdrop` package is in Omarchy's package repository, it installs the pl
 
 ```bash
 omarchy pkg add omdrop      # plain Arch: sudo pacman -S omdrop
-omdrop setup                # once per user: adds the widget to the bar
+/usr/bin/omdrop setup       # once per user: adds the widget to the bar
 ```
 
-The package puts the plugin in `/usr/share/omdrop`, and `omdrop setup` links it into `~/.config/omarchy/plugins`. If you already installed Omdrop with `omarchy plugin add`, `omdrop setup` asks before replacing that copy, and moves it aside to a hidden `.netmojo.omdrop.replaced-<date>` directory beside it rather than deleting it. The radio still comes from its own package: `brcmfmac-awdl-dkms` on a Mac, `omdrop-owl` on other Wi-Fi cards.
+The package puts the plugin in `/usr/share/omdrop`, and `setup` links it into `~/.config/omarchy/plugins`. Run it as `/usr/bin/omdrop` the first time: if you installed Omdrop before with `omarchy plugin add`, a plain `omdrop` may still run that copy, from `~/.local/bin`. `setup` asks before replacing that copy, and moves it aside to a hidden `.netmojo.omdrop.replaced-<date>` directory beside it rather than deleting it. Afterwards `omdrop` runs the package. The radio still comes from its own package: `brcmfmac-awdl-dkms` on a Mac, `omdrop-owl` on other Wi-Fi cards.
 
 ### omdrop-core
 

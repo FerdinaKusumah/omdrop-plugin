@@ -779,10 +779,13 @@ manifest_version() {
 # when it linked the plugin. OMDROP_PACKAGE_ROOT moves /usr for tests; it only
 # decides whether setup links the plugin into the user's own home.
 PLUGIN_ID=netmojo.omdrop
+plugin_packaged() {
+  [[ "$(readlink -f "$1")" == "$(readlink -f "${OMDROP_PACKAGE_ROOT:-/usr}")"/* ]]
+}
 link_plugin() {
   local plugin dir="$HOME/.config/omarchy/plugins" target old answer aside
   plugin=$(readlink -f "$1") || return 1
-  [[ "$plugin" == "$(readlink -f "${OMDROP_PACKAGE_ROOT:-/usr}")"/* ]] || return 1
+  plugin_packaged "$plugin" || return 1
   target="$dir/$PLUGIN_ID"
   [[ -L "$target" && "$(readlink -f "$target")" == "$plugin" ]] && return 1
   if [[ -L "$target" && ! -e "$target" ]]; then
@@ -821,10 +824,25 @@ link_plugin() {
   fi
   echo "Added Omdrop to the shell's plugins: $target links to $plugin."
   command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell shell rescanPlugins >/dev/null 2>&1
-  if command -v omarchy-plugin-enable >/dev/null 2>&1 && omarchy-plugin-enable "$PLUGIN_ID" >/dev/null 2>&1; then
-    echo "Added its widget to the bar."
-  fi
   return 0
+}
+
+# Add the packaged plugin's widget to the bar, once. Kept apart from the link,
+# so a failed `omarchy plugin enable` is retried by the next setup, and
+# remembered once it worked, so a user who later removes the widget keeps it
+# removed.
+add_widget() {
+  local plugin target="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+  plugin=$(readlink -f "$1") || return 1
+  [[ -L "$target" && "$(readlink -f "$target")" == "$plugin" ]] || return 1
+  [[ "$(setting_get widget_added)" == 1 ]] && return 1
+  if command -v omarchy-plugin-enable >/dev/null 2>&1 && omarchy-plugin-enable "$PLUGIN_ID" >/dev/null 2>&1; then
+    setting_set widget_added 1
+    echo "Added its widget to the bar."
+    return 0
+  fi
+  echo "omdrop could not add its widget to the bar. The next omdrop setup tries again, or run: omarchy plugin enable $PLUGIN_ID" >&2
+  return 1
 }
 
 # Everything `setup` installs, each step idempotent. Returns 0 when it changed
@@ -840,8 +858,12 @@ setup_install() {
     echo "Set up the service that receives files."
   fi
 
-  link_command "$plugin" && did=1
+  # A packaged copy has /usr/bin/omdrop. An existing ~/.local/bin/omdrop names
+  # the plugin's path under ~/.config, so it follows the copy link_plugin
+  # puts there, and keeps following the old one if the user declines.
+  plugin_packaged "$plugin" || { link_command "$plugin" && did=1; }
   link_plugin "$plugin" && did=1
+  add_widget "$plugin" && did=1
 
   # Received links are stored as .url files, and a Mac may send a .webloc.
   # Without this, double-clicking one opens it in a text editor.
