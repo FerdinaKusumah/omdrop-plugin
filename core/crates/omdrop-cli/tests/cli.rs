@@ -977,10 +977,7 @@ fn a_helper_without_probe_gets_the_broadcom_checks() {
         "This computer has no Apple Broadcom Wi-Fi, which Omdrop's own driver needs: it runs only on Apple Silicon Macs, not in a virtual machine. Other Wi-Fi cards need a different radio backend (docs/radio-backend.md)."
     );
     // On a Mac the hardware item goes and the driver's own checks remain.
-    let dev = r.f.root.join("sys/bus/pci/devices/0000:01:00.0");
-    std::fs::create_dir_all(&dev).unwrap();
-    std::fs::write(dev.join("vendor"), "0x14e4\n").unwrap();
-    std::fs::write(dev.join("class"), "0x028000\n").unwrap();
+    on_a_mac(&r);
     let ids = r.ids();
     assert!(
         ids.iter()
@@ -1286,6 +1283,81 @@ fn awdl_on_hardware_it_cannot_drive_is_refused_alone() {
         "This computer has no Apple Broadcom Wi-Fi.\n"
     );
     assert_eq!(text(&out.stdout), "");
+}
+
+/// UFW installed and its service active.
+fn with_ufw_active(r: &Radio) {
+    write_exec(&r.f.root.join("bin/ufw"), "#!/bin/sh\nexit 0\n");
+    write_exec(&r.f.root.join("bin/systemctl"), "#!/bin/sh\nexit 0\n");
+}
+
+/// Apple's Broadcom Wi-Fi on PCI.
+fn on_a_mac(r: &Radio) {
+    let dev = r.f.root.join("sys/bus/pci/devices/0000:01:00.0");
+    std::fs::create_dir_all(&dev).unwrap();
+    std::fs::write(dev.join("vendor"), "0x14e4\n").unwrap();
+    std::fs::write(dev.join("class"), "0x028000\n").unwrap();
+}
+
+/// With the driver current, install-driver still adds the firewall rule
+/// while UFW is active, and builds nothing.
+fn assert_installs_only_the_firewall_rule(r: &Radio) {
+    let out = r.run(&["install-driver"]);
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
+    assert!(stdout.contains(" firewall install"), "{stdout}");
+    for driver in ["brcmfmac-awdl-dkms", "makepkg", "omdrop-awdl"] {
+        assert!(!stdout.contains(driver), "{driver}: {stdout}");
+    }
+    assert!(!stdout.contains("Nothing to do"), "{stdout}");
+    if receiver_libs_here() {
+        assert!(
+            stdout.starts_with("Opening a terminal to add the firewall rule the receiver needs.\n"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("pacman"), "{stdout}");
+    }
+}
+
+#[test]
+fn a_current_awdl_driver_still_gets_the_firewall_rule_while_ufw_is_active() {
+    let r = Radio::new();
+    r.helper(&backend_helper(Some(awdl_hooks(serde_json::json!([])))));
+    with_driver(&r, Some("0.10.0-1"));
+    with_ufw_active(&r);
+    assert_installs_only_the_firewall_rule(&r);
+}
+
+#[test]
+fn a_current_driver_without_a_probe_still_gets_the_firewall_rule_while_ufw_is_active() {
+    let r = Radio::new();
+    r.helper(&backend_helper(None));
+    on_a_mac(&r);
+    with_driver(&r, Some("0.9.3-1"));
+    with_ufw_active(&r);
+    assert_installs_only_the_firewall_rule(&r);
+}
+
+#[test]
+fn a_current_driver_with_ufw_inactive_has_nothing_to_do() {
+    if !receiver_libs_here() {
+        eprintln!("this machine lacks the receiver's packages; nothing would be current");
+        return;
+    }
+    for probe in [None, Some(awdl_hooks(serde_json::json!([])))] {
+        let r = Radio::new();
+        r.helper(&backend_helper(probe.clone()));
+        on_a_mac(&r);
+        with_driver(&r, Some("0.9.3-1"));
+        write_exec(&r.f.root.join("bin/ufw"), "#!/bin/sh\nexit 0\n");
+        let out = r.run(&["install-driver"]);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        assert_eq!(
+            text(&out.stdout),
+            "The driver and the Python library the receiver needs are both installed and current. Nothing to do.\n",
+            "{probe:?}"
+        );
+    }
 }
 
 /// The identity commands log what reached them.

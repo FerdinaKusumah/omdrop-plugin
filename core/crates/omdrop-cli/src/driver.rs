@@ -839,6 +839,12 @@ pub fn cmd_install_driver() -> i32 {
     }
     let helper = is_executable(&c.discoverable);
     if helper && driver_current() && receiver_libs_installed() {
+        // The firewall rule is still Omdrop's to add, as install_for_backend
+        // adds it. Whether it is already there takes root to read, and
+        // `ufw allow` skips a rule it already has.
+        if ufw_active() {
+            return install_firewall(&build_script(&self_q, false, false, false, true));
+        }
         outln!(
             "The driver and the Python library the receiver needs are both installed and current. Nothing to do."
         );
@@ -869,6 +875,21 @@ pub fn cmd_install_driver() -> i32 {
     }
     outln!("Opening a terminal to install the driver.");
     launch_install(&build, INTRO)
+}
+
+/// The driver and the receiver's packages are current: only the firewall
+/// rule remains, run the same way as the driver install.
+fn install_firewall(build: &str) -> i32 {
+    if !have(LAUNCHER) {
+        outln!("Add the firewall rule the receiver needs with:");
+        outln!("\n{build}\n");
+        return 0;
+    }
+    outln!("Opening a terminal to add the firewall rule the receiver needs.");
+    launch_install(
+        build,
+        "Omdrop needs a firewall rule for its receiver, which requires administrative privilege to add. You will be prompted for your password.",
+    )
 }
 
 /// With a radio backend that probes and is not omdrop-awdl, the radio is
