@@ -44,7 +44,7 @@ If the change affects how Omdrop talks to an Apple device, show the behaviour be
 - Run `python3 -m unittest discover -s tests` on current `main` and on your branch. Report both counts.
 - Name every test that fails, and say whether it also fails on `main`.
 - Add a regression test that fails without your change and passes with it. Use real sockets and real TLS where the existing tests do. A test must not depend on the machine it runs on.
-- With omdrop-core installed (`/usr/bin/omdrop`), `bin/omdrop` hands every command to it, so the command-line tests then exercise core. Run them with `OMDROP_IMPLEMENTATION=python` to test the bash script.
+- With omdrop-core installed (`/usr/lib/omdrop-core/omdrop`), `bin/omdrop` hands every command to it, so the command-line tests then exercise core. Run them with `OMDROP_IMPLEMENTATION=python` to test the bash script.
 
 ### omdrop-core
 
