@@ -498,7 +498,7 @@ fn prune_previews(dir: &Path) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
-    finished.sort_by(|a, b| b.0.cmp(&a.0));
+    finished.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
     for (_, path) in finished.into_iter().skip(PREVIEW_KEEP) {
         let _ = std::fs::remove_file(path);
     }
