@@ -36,13 +36,13 @@ On first use, the panel opens a terminal that asks for your password to:
 
 Omdrop runs as omdrop-core, its Rust version, wherever the radio backend supports it, and as its bash and Python programs on other backends. Today omdrop-core supports omdrop-awdl; omdrop-owl follows once it ships omdrop-core's hooks ([#73](https://github.com/netmojo-systems/omdrop-plugin/issues/73)).
 
-With a supported backend, `omdrop setup` and `omdrop doctor` offer omdrop-core. Install it once the `omdrop` command is set up, with Omdrop off:
+With a supported backend, `omdrop setup` and `omdrop doctor` offer omdrop-core. Install it with Omdrop off:
 
 ```bash
 omdrop install-core
 ```
 
-It opens a terminal that asks for your password and installs the `omdrop-core` package: from your package repositories when they carry the version this release needs, and otherwise built from the plugin's `core/`. With any other backend, it refuses and installs nothing.
+It first puts the plugin's `omdrop` command at `~/.local/bin/omdrop` if it isn't there, following the same rules as `omdrop setup`, so you keep the command even if the install fails. It then opens a terminal that asks for your password and installs the `omdrop-core` package: from your package repositories when they carry the version this release needs, and otherwise built from the plugin's `core/`. With any other backend, it refuses and installs nothing.
 
 - Once omdrop-core is installed and at least the version this release needs, the plugin's `omdrop` hands every command to it, including the panel's. omdrop-core's own `omdrop` sits at `/usr/lib/omdrop-core/omdrop`, off your `PATH`, so every command goes through the plugin's.
 - An older omdrop-core gets no commands: the bash and Python programs run instead, and `omdrop doctor` says how to update it.

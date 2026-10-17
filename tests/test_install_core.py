@@ -72,7 +72,7 @@ exit 0
         self.backend(None)
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ("OMDROP_IMPLEMENTATION", "CORE_INSTALLED", "CORE_REPO",
-                                 "CORE_OWNER", "RECEIVING")}
+                                 "CORE_OWNER", "RECEIVING", "XDG_BIN_HOME")}
         self.env.update(PATH=f"{self.bin}:{self.env['PATH']}",
                         HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / ".config"),
@@ -240,6 +240,41 @@ exit 0
         self.env["CORE_INSTALLED"] = "0.0.1-1"
         code, out = self.install()
         self.assertEqual(code, 0, out)
+        self.assertIn("makepkg", out)
+
+    # The package puts nothing on PATH, and replacing a core that was
+    # /usr/bin/omdrop removes that command, so install-core links the plugin's.
+
+    def link(self):
+        return Path(self.env["HOME"]) / ".local" / "bin" / "omdrop"
+
+    def test_it_puts_the_plugins_command_on_path_before_installing(self):
+        self.env["CORE_INSTALLED"] = "0.1.1-1"
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(os.readlink(self.link()), str(ROOT / "bin" / "omdrop"))
+        said = f"Put the omdrop command on your PATH at {self.link()}."
+        self.assertIn(said, out)
+        self.assertLess(out.index(said), out.index("Opening a terminal"), out)
+        # Already in place: nothing to say.
+        code, out = self.install()
+        self.assertNotIn("Put the omdrop command", out)
+
+    def test_the_link_does_not_wait_for_the_install_to_succeed(self):
+        self.env["CORE_INSTALLED"] = "0.1.1-1"
+        self.env["RECEIVING"] = "1"
+        code, out = self.install()
+        self.assertNotEqual(code, 0)
+        self.assertEqual(os.readlink(self.link()), str(ROOT / "bin" / "omdrop"))
+
+    def test_a_command_of_the_users_own_is_left_alone(self):
+        self.link().parent.mkdir(parents=True)
+        self.link().write_text("#!/bin/sh\necho mine\n")
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.link().is_symlink())
+        self.assertEqual(self.link().read_text(), "#!/bin/sh\necho mine\n")
+        self.assertIn(f"Left {self.link()} alone: it is not ours", out)
         self.assertIn("makepkg", out)
 
     def test_it_refuses_while_receiving(self):
