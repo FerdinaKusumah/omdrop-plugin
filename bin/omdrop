@@ -90,10 +90,11 @@ version_ge() {
 # doctor says so. The version is core's own (its `version` line, the workspace
 # version in core/Cargo.toml), not pacman's, which knows nothing of a core
 # installed another way. Asking costs about a millisecond. Raise CORE_MIN, and
-# core's pkgver with it, when the plugin starts relying on something newer;
-# 0.1.3 pins omdrop-awdl 0.10.0, and install-driver goes to core, so an older
-# core would build the older driver.
-CORE_MIN=0.1.3
+# core's pkgver with it, when the plugin starts relying on something newer:
+# 0.1.3 pins omdrop-awdl 0.10.0 (install-driver goes to core, so an older core
+# would build the older driver), and 0.1.4 has #57's HEIC previews and Files
+# fallback, which an older core would silently lack.
+CORE_MIN=0.1.4
 CORE_TOO_OLD=
 core_version() {
   timeout -k 1 2 "$OMDROP_CORE" version </dev/null 2>/dev/null | sed -n 's/^omdrop-core \([^[:space:]]*\)$/\1/p' | head -n 1
@@ -136,7 +137,7 @@ esac
 # A fallback that silently substitutes for the real value is the same class of
 # defect as a status line reporting a state that was never entered, so this one
 # says when it is guessing, and says when the two disagree.
-VERSION_FALLBACK=0.17.0
+VERSION_FALLBACK=0.17.1
 omdrop_version() {
   local dir manifest version= real
   real=$(readlink -f "$0" 2>/dev/null) || real="$0"
