@@ -13,7 +13,7 @@ Omdrop needs a radio backend: the package that gives this computer an `awdl0` in
 
 The two packages conflict, so a computer has one or the other. [docs/radio-backend.md](docs/radio-backend.md) describes what a backend provides.
 
-The Python CLI and receiver use `tomllib`, built into Python 3.11+, to read TOML configuration. On Python 3.10, install `tomli` (`sudo apt install python3-tomli` on Debian/Ubuntu). It must be available to the system `python3` used by the CLI and receiver service, not just a development virtual environment. This supplies the configuration parser; it does not establish full support for other distributions.
+The bash and Python programs use `tomllib`, built into Python 3.11+, to read TOML configuration; omdrop-core doesn't. On Python 3.10, install `tomli` (`sudo apt install python3-tomli` on Debian/Ubuntu). It must be available to the system `python3` used by the CLI and receiver service, not just a development virtual environment. This supplies the configuration parser; it does not establish full support for other distributions.
 
 [LocalSend](https://localsend.org), which ships with Omarchy, is an open alternative that needs its app on every device.
 
@@ -27,21 +27,38 @@ Answer yes when it asks to enable the plugin. The icon, a triangle dropping into
 
 On first use, the panel opens a terminal that asks for your password to:
 
-- Install `python-libarchive-c` from the official Arch repositories if it is missing. On Arch's Python 3.11+, it is the receiver's only Python library outside the standard library. On a Mac, the same step builds and installs the driver, pinned to an exact commit.
+- Install `python-libarchive-c` and `keyutils` from the official Arch repositories if they are missing. The bash and Python receiver unpacks transfers with the first and reads the cached identity from the kernel keyring with the second; omdrop-core's receiver uses neither. On a Mac, the same step installs the driver: from your package repositories when they carry it, and otherwise built from a pinned commit.
 - Add one firewall rule: TCP 8771 on `awdl0`, from IPv6 link-local addresses only.
 
-The first time you turn Omdrop on, it finishes setting up and installs the `omdrop` command at `~/.local/bin/omdrop`. To get the command before that, run `~/.config/omarchy/plugins/netmojo.omdrop/bin/omdrop setup`. Run `omdrop --version` to include the version in bug reports.
+`omdrop` is always the plugin's command, at `~/.local/bin/omdrop`. `omdrop setup` creates it, and so does the first `omdrop on`, including turning Omdrop on from the panel; to get it before either, run `~/.config/omarchy/plugins/netmojo.omdrop/bin/omdrop setup`. It runs omdrop-core when that is installed and current, and the bash and Python programs otherwise. Run `omdrop --version` to include the version in bug reports.
+
+### omdrop-core
+
+Omdrop runs as omdrop-core, its Rust version, wherever the radio backend supports it, and as its bash and Python programs on other backends. Today omdrop-core supports omdrop-awdl; omdrop-owl follows once it ships omdrop-core's hooks ([#73](https://github.com/netmojo-systems/omdrop-plugin/issues/73)).
+
+With a supported backend, `omdrop setup` and `omdrop doctor` offer omdrop-core. Install it with Omdrop off:
+
+```bash
+omdrop install-core
+```
+
+It first puts the plugin's `omdrop` command at `~/.local/bin/omdrop` if it isn't there, following the same rules as `omdrop setup`, so you keep the command even if the install fails. It then opens a terminal that asks for your password and installs the `omdrop-core` package: from your package repositories when they carry the version this release needs, and otherwise built from the plugin's `core/`. With any other backend, it refuses and installs nothing.
+
+- Once omdrop-core is installed and at least the version this release needs, the plugin's `omdrop` hands every command to it, including the panel's. omdrop-core's own `omdrop` sits at `/usr/lib/omdrop-core/omdrop`, off your `PATH`, so every command goes through the plugin's.
+- An older omdrop-core gets no commands: the bash and Python programs run instead, and `omdrop doctor` says how to update it.
+- Without omdrop-core, the bash and Python programs run, and everything above works the same.
+- `OMDROP_IMPLEMENTATION=python` keeps the bash and Python programs with omdrop-core installed; `OMDROP_IMPLEMENTATION=rust` refuses to run without it.
 
 ## Upgrade
 
 ```bash
 omarchy plugin update netmojo.omdrop   # fetch the latest release
 omarchy-restart-shell                  # the bar loads the new panel only after a shell restart
+omdrop install-core                    # if your radio backend supports omdrop-core, install or update it
 omdrop install-driver                  # on a Mac, rebuild the driver if the new release needs a newer one
-omdrop install-core                    # if you use omdrop-core, update it to the version this release carries
 ```
 
-`omdrop install-driver` and `omdrop install-core` do nothing when everything they install is already current. On a PC, update the radio backend through its own package: `omdrop install-driver` leaves it alone. If Omdrop is on while you upgrade, turn it off and on again: the receiver keeps running the old version until it restarts.
+Run `omdrop install-core` first, so that `omdrop install-driver` runs as omdrop-core, which pins the driver and checks it. `omdrop install-driver` and `omdrop install-core` do nothing when everything they install is already current. `omdrop doctor` reports an omdrop-core older than the release needs; only omdrop-core's `omdrop doctor` also reports a driver older than the release needs. On a PC, update the radio backend through its own package: `omdrop install-driver` leaves it alone. If Omdrop is on while you upgrade, turn it off and on again: the receiver keeps running the old version until it restarts. `omdrop install-core` asks you to turn Omdrop off first.
 
 ## Receive files
 
@@ -94,11 +111,11 @@ omdrop send --verbose ~/photo.jpg # protocol log, for bug reports
 
 `start`, `stop`, `list`, and `vis` are aliases for `on`, `off`, `peers`, and `visibility`. Run `omdrop help` for the rest.
 
-`omdrop send` accepts `http` and `https` links, including several links in one transfer. A `.webloc` or `.url` file containing a web link is sent as that link so the recipient can open it in a browser, rather than as a downloaded shortcut. Other shortcut files remain files. Send links and files separately. If the installed sender lacks link support, update the radio backend: `omdrop install-driver` on a Mac, or the backend's own package on a PC.
+`omdrop send` accepts `http` and `https` links, including several links in one transfer. A `.webloc` or `.url` file containing a web link is sent as that link so the recipient can open it in a browser, rather than as a downloaded shortcut. Other shortcut files remain files. Send links and files separately. omdrop-core's own sender sends links. Without omdrop-core, the radio backend's sender sends them; if it lacks link support, update the radio backend: `omdrop install-driver` on a Mac, or the backend's own package on a PC.
 
 For a named recipient, `omdrop send` searches for up to two minutes and reports devices as they answer. If Omdrop is off, it turns Omdrop on for the usual 10-minute window first; a send without a name needs Omdrop on already. Names match without regard to case; an exact name takes priority over a substring match. If several devices match, including duplicate exact names, choose one with `--to ADDRESS`. An unfinished lookup sends nothing, even if a matching name has already answered.
 
-`OMDROP_NAME_WAIT` sets the discovery timeout in decimal seconds (1–2147483647, default 120). Leading zeros are allowed; invalid values use the default. Stopping lookup processes can take up to two additional seconds, including when a helper stops producing output but remains alive. Cancellation stops the lookup and its probes. `--wait` controls the separate receiver-wake wait after discovery, not the name search.
+`OMDROP_NAME_WAIT` sets the discovery timeout in decimal seconds (1–2147483647, default 120). Leading zeros are allowed; invalid values use the default. omdrop-core waits exactly that long; the bash and Python programs count whole seconds of the clock, so their wait is between one second less and the full value. Stopping lookup processes can take up to two additional seconds, including when a helper stops producing output but remains alive. Cancellation stops the lookup and its probes. `--wait` controls the separate receiver-wake wait after discovery, not the name search.
 
 In `omdrop peers -n` output, `(no response)` means nothing answered on the AirDrop port, and `(anonymous)` means the device answered but withheld its name. To look up names without the Bluetooth announcement, add `--no-wake`; only devices already listening will answer. AWDL addresses change every session.
 
@@ -184,6 +201,8 @@ What the cache does and doesn't protect against:
 
 The radio helper, `/usr/lib/omdrop/omdrop-discoverable`, runs as root through `pkexec`, because configuring AWDL needs root: vendor commands to the Broadcom firmware, or monitor-mode frame injection with OWL. The radio backend package installs the helper and a polkit action that covers only that root-owned path: `org.omarchy.omdrop.discover` from omdrop-awdl, `io.github.t4t5.omdrop-owl.discover` from omdrop-owl. It needs no password from your own active session, and an administrator's password from remote or inactive sessions.
 
+With omdrop-core installed, its root helper, `/usr/lib/omdrop-core/omdrop-radio`, runs as root instead, through polkit action `org.omarchy.omdrop.radio`, with the same password rules. It runs the radio backend's hooks in `/usr/lib/omdrop/radio/`, and the backend's `omdrop-discoverable` when there are none.
+
 The receiver runs as you, so received files are yours. The firewall rule is added with `sudo ufw` in the install terminal, which normally reuses that terminal's earlier authentication.
 
 The AirDrop identity is kept in `~/.omdrop/keys`, or in 1Password; see [Your AirDrop identity](#your-airdrop-identity). If `~/.opendrop/keys` exists and `~/.omdrop` doesn't, Omdrop copies it there once and leaves the original in place for OpenDrop.
@@ -196,9 +215,10 @@ Protocol dumps for bug reports are off by default. `omdrop send --verbose` write
 omdrop firewall remove
 omdrop links remove
 omdrop skill remove
-omarchy plugin remove netmojo.omdrop
-sudo pacman -R brcmfmac-awdl-dkms   # the radio backend on a Mac; omdrop-owl on a PC
 omdrop identity lock                # clear a cached identity
+omarchy plugin remove netmojo.omdrop
+sudo pacman -R omdrop-core          # omdrop-core, if installed
+sudo pacman -R brcmfmac-awdl-dkms   # the radio backend on a Mac; omdrop-owl on a PC
 rm -rf ~/.omdrop                    # this computer's AirDrop identity
 ```
 
@@ -211,7 +231,7 @@ rm -rf ~/.omdrop                    # this computer's AirDrop identity
 
 To report a bug or request a feature, [open an issue](https://github.com/netmojo-systems/omdrop-plugin/issues). [Pull requests](https://github.com/netmojo-systems/omdrop-plugin/pulls) are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) lists the setup details, hardware evidence, and tests a pull request needs.
 
-`core/` holds [omdrop-core](core/README.md), a Rust implementation of the `omdrop` command, the receiver, the sender and the root helper. It is optional. On a Mac, `omdrop doctor` offers it, and `omdrop install-core` installs it in a terminal you watch: from your package repositories when they carry this release's version, and otherwise built from this plugin's `core/`. Once it is installed, the plugin hands every command to it, as long as it is at least the version the plugin needs. An older core gets none until it is updated, and `omdrop doctor` says so. `OMDROP_IMPLEMENTATION=python` keeps the current programs, and `OMDROP_IMPLEMENTATION=rust` insists on core.
+`core/` holds [omdrop-core](core/README.md), the Rust version of the `omdrop` command, the receiver, the sender and the root helper. It is what Omdrop runs wherever the radio backend supports it ([omdrop-core](#omdrop-core)), and new development goes into it. The bash and Python programs remain for other backends and for installs without omdrop-core.
 
 ## Trademark
 

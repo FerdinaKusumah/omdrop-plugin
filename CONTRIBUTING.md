@@ -44,11 +44,11 @@ If the change affects how Omdrop talks to an Apple device, show the behaviour be
 - Run `python3 -m unittest discover -s tests` on current `main` and on your branch. Report both counts.
 - Name every test that fails, and say whether it also fails on `main`.
 - Add a regression test that fails without your change and passes with it. Use real sockets and real TLS where the existing tests do. A test must not depend on the machine it runs on.
-- With omdrop-core installed (`/usr/bin/omdrop`), `bin/omdrop` hands every command to it, so the command-line tests then exercise core. Run them with `OMDROP_IMPLEMENTATION=python` to test the bash script.
+- With omdrop-core installed (`/usr/lib/omdrop-core/omdrop`), `bin/omdrop` hands every command to it, so the command-line tests then exercise core. Run them with `OMDROP_IMPLEMENTATION=python` to test the bash script.
 
 ### omdrop-core
 
-`core/` holds omdrop-core, the same programs in Rust, as one Cargo workspace. It builds and installs as its own package; nothing in it runs from the plugin's clone. Users install it with `omdrop install-core`, which builds this `core/` with makepkg when no repository carries its version. Its tests run as an ordinary user, never root:
+`core/` holds omdrop-core, the same programs in Rust, as one Cargo workspace. Omdrop runs it wherever the radio backend supports it; today that is omdrop-awdl, and omdrop-owl follows once it ships core's hooks (#73). Other backends run the bash and Python programs. Core builds and installs as its own package; nothing in it runs from the plugin's clone. Users install it with `omdrop install-core`, which `omdrop setup` and `omdrop doctor` offer with a supported backend, and which builds this `core/` with makepkg when no repository carries its version. Its tests run as an ordinary user, never root:
 
 ```bash
 cd core
@@ -62,6 +62,8 @@ cargo fmt --check
 `core/PKGBUILD`'s `pkgver` and `pkgrel` are how `omdrop install-core` and `omdrop doctor` tell whether an installed core matches the plugin. Bump one of them in any release that changes `core/`, or users keep the older core.
 
 `bin/omdrop` hands commands only to a core at least `CORE_MIN`, which it reads from the installed core's own `omdrop version` line rather than from pacman. Below that, or when the version can't be read, it runs the bash and Python programs, and `doctor` says the core is too old and names what updates it. When the plugin starts relying on something new in core, raise `CORE_MIN` to that version, and bump `pkgver` in `core/PKGBUILD` and `core/Cargo.toml` together. A `pkgrel` bump alone doesn't change the version core reports.
+
+The omdrop-awdl driver is pinned in both stacks: `DRIVER_COMMIT` and `DRIVER_VERSION` in `bin/omdrop` and in `core/crates/omdrop-cli/src/driver.rs`, each with the commit also written literally in its build script. Change them together, in one commit. Because core runs `omdrop install-driver` once it is installed, a new driver pin also needs a core version bump and `CORE_MIN` raised to it, or an older core keeps building the older driver.
 
 New development goes into `core/` only. The bash and Python programs remain as the fallback for installs without omdrop-core, are not developed further, and will be removed at 1.0.0, so a pull request that changes them will usually be asked to make the change in Rust instead. There are two exceptions. Security fixes for the bash and Python programs are welcome, because installs without omdrop-core still run them. Installing omdrop-core (`omdrop install-core`, and `doctor` offering it) lives in `bin/omdrop`, because it has to run before core exists; core's own `install-core` runs that one.
 

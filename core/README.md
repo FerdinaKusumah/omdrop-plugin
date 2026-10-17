@@ -2,7 +2,9 @@
 
 The radio-independent half of Omdrop, AirDrop for Omarchy, in Rust: the `omdrop` command, the AirDrop receiver and sender, identity, the advertisers, and the one root entry point. It lives in `core/` of the [omdrop-plugin](https://github.com/netmojo-systems/omdrop-plugin) repository, beside the panel that uses it. A radio backend supplies the hooks that bring up `awdl0`; see [the backend contract](docs/backend-contract.md).
 
-**Status:** not released. It is built and installed as its own package (`makepkg -si` in this directory), never run from the plugin's clone: the root helper must sit at a fixed root-owned path. When `/usr/bin/omdrop` is installed, the plugin's `bin/omdrop` hands every command to it, if it is at least the plugin's `CORE_MIN`; `OMDROP_IMPLEMENTATION=python` keeps the bash and Python programs. The plugin reads core's version from the `omdrop-core <version>` line `omdrop version` prints, which is the workspace version in `Cargo.toml`, so keep that line's format. Each program is a drop-in for the one it replaces, with the same arguments, output, files and exit codes, so the old programs remain a fallback.
+**Status:** the default wherever the radio backend supports it: today omdrop-awdl, with omdrop-owl to follow once it ships these hooks (#73). On other backends the plugin runs its bash and Python programs. `omdrop install-core`, which `omdrop setup` and `omdrop doctor` offer with a supported backend, installs the `omdrop-core` package: from the package repositories when they carry the plugin's version, and otherwise built from this directory with makepkg. It never runs from the plugin's clone, because the root helper must sit at a fixed root-owned path.
+
+The package installs every program in `/usr/lib/omdrop-core/`, `omdrop` included, and nothing on `PATH`. The plugin's `omdrop` is the one command people and the panel run: when `/usr/lib/omdrop-core/omdrop` is installed and reports at least the plugin's `CORE_MIN`, the plugin's `bin/omdrop` hands every command to it. Below `CORE_MIN`, or when its version can't be read, the bash and Python programs run, and `omdrop doctor` says how to update core. `OMDROP_IMPLEMENTATION=python` keeps the bash and Python programs; `rust` requires a core at least `CORE_MIN`. Core's `omdrop` moves to `/usr/bin/omdrop` only once omdrop-owl runs on core and cores older than this hand-off are gone. The plugin reads core's version from the `omdrop-core <version>` line `omdrop version` prints, which is the workspace version in `Cargo.toml`, so keep that line's format. Each program is a drop-in for the one it replaces, with the same arguments, output, files and exit codes, so the old programs remain a fallback.
 
 Proven live against a Mac and an iPhone (October 2026):
 - the receiver, in Everyone and Contacts Only, including HEIC originals and 141.6 MB videos (six of six byte-identical);
@@ -14,7 +16,7 @@ Proven live against a Mac and an iPhone (October 2026):
 
 |Installed as|Crate|Replaces|Runs as|
 |---|---|---|---|
-|`/usr/bin/omdrop`|`omdrop-cli`|omdrop-plugin `bin/omdrop`, `bin/pick.py`|user|
+|`/usr/lib/omdrop-core/omdrop`|`omdrop-cli`|omdrop-plugin `bin/omdrop`, `bin/pick.py`, which runs it|user|
 |`/usr/lib/omdrop-core/omdrop-receiver`|`omdrop-receiver`|omdrop-plugin `bin/airdrop-serve.py`|user (systemd user unit)|
 |`/usr/lib/omdrop-core/send-to-peer`|`omdrop-send`|omdrop-awdl `userspace/send-to-peer`|user|
 |`/usr/lib/omdrop-core/airdrop-send`|`omdrop-send`|omdrop-awdl `userspace/airdrop-send.py`|user|
@@ -46,15 +48,16 @@ To build and install the package:
 makepkg -si
 ```
 
-`omdrop-radio` needs a backend that installs hooks in `/usr/lib/omdrop/radio/`. omdrop-awdl installs the Broadcom hooks from 0.10.0. Without them, `omdrop` uses the 0.9.x `omdrop-discoverable` instead. Either way, `omdrop install-driver` and `omdrop doctor` treat omdrop-awdl as the driver they manage: they check its version against the one the plugin pins, and `install-driver` builds that one ([radio backends](../docs/radio-backend.md#omdrop-awdls-hooks)).
+`omdrop-radio` needs a backend that installs hooks in `/usr/lib/omdrop/radio/`. omdrop-awdl installs the Broadcom hooks from 0.10.0, the version the plugin pins, so core drives the radio directly once `omdrop install-driver` has updated the driver. Without them, `omdrop` uses the 0.9.x `omdrop-discoverable` instead. Either way, `omdrop install-driver` and `omdrop doctor` treat omdrop-awdl as the driver they manage: `doctor` reports a driver older than the one the plugin pins, and `install-driver` builds that one ([radio backends](../docs/radio-backend.md#omdrop-awdls-hooks)).
 
 ## How `omdrop` finds the other programs
 
 Each lookup stops at the first match:
 
-- **Sender:** `OMDROP_SENDER`; `send-to-peer` in `<prefix>/lib/omdrop-core/` when `omdrop` is `<prefix>/bin/omdrop`; the directory `omdrop` is in (a development build); `/usr/lib/omdrop/send-to-peer`; `PATH`.
+- **Sender:** `OMDROP_SENDER`; `send-to-peer` in the directory `omdrop` is in (`/usr/lib/omdrop-core/` in the package, the target directory in a development build); `/usr/lib/omdrop/send-to-peer`; `PATH`.
 - **Root helper:** `OMDROP_DISCOVERABLE`; `/usr/lib/omdrop-core/omdrop-radio` if `/usr/lib/omdrop/radio/` exists; `/usr/lib/omdrop/omdrop-discoverable`.
 - **Receiver:** `omdrop-receiver`, found like the sender; otherwise the plugin's `airdrop-serve.py`.
+- **`omdrop` itself,** for the systemd units, notifications, desktop entries and the `~/.local/bin/omdrop` link: the plugin's `bin/omdrop`, so everything goes through the one entry point; without a plugin, core's own path.
 
 `OMDROP_IMPLEMENTATION` chooses the stack: `python` uses the bash and Python programs throughout, for comparison; `rust`, or unset, uses these programs, falling back to a backend's own `omdrop-discoverable` when it ships no hooks. Any other value is refused (exit 2).
 

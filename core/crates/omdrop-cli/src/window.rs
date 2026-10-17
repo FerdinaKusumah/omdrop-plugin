@@ -847,14 +847,15 @@ pub fn setup_install() -> bool {
     did
 }
 
-/// Put `omdrop` on the user's PATH as a link into the plugin, when that is
-/// how we were run: the plugin manifest cannot declare a command. A user who
-/// put their own omdrop there outranks us; only a link into a plugin
-/// directory, or a dangling one, is replaced. Run as an installed program
-/// (/usr/bin/omdrop) we are already on PATH, and nothing is linked.
+/// Put `omdrop` on the user's PATH as a link to the plugin's `bin/omdrop`,
+/// the one entry point: the plugin manifest cannot declare a command, and
+/// core's own `omdrop` is off PATH, so the link never points at core. A user
+/// who put their own omdrop there outranks us; only a link into a plugin
+/// directory, or a dangling one, is replaced. Without a plugin nothing is
+/// linked.
 fn link_command() -> bool {
     let c = ctx();
-    let Some(plugin) = c.plugin().filter(|p| p.ours) else {
+    let Some(plugin) = c.plugin() else {
         return false;
     };
     let target = plugin.dir.join("bin/omdrop");
@@ -940,7 +941,7 @@ pub fn cmd_setup() -> i32 {
     }
     let offers = crate::driver::core_offers();
     if !offers.is_empty() {
-        outln!("\nOptional:");
+        outln!("\nTo do:");
         for (_, say) in &offers {
             outln!("  - {say}");
         }

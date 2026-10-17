@@ -145,7 +145,11 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(&self.omdrop);
+        self.command_as(&self.omdrop, args)
+    }
+
+    fn command_as(&self, program: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(program);
         cmd.args(args)
             .env_clear()
             .env(
@@ -619,6 +623,43 @@ fn a_plugin_outside_the_default_directory_is_found_again_by_what_omdrop_starts()
     assert!(ev.contains(&watch), "{ev}");
 }
 
+#[test]
+fn core_run_directly_still_starts_everything_through_the_plugins_command() {
+    // Core's own omdrop, run by its path rather than through the plugin's
+    // bin/omdrop: the units still go through the plugin, the one entry point.
+    let f = Fixture::new();
+    let plugins = f.root.join("home/.config/omarchy/plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::os::unix::fs::symlink(
+        f.root.join("plugins/netmojo.omdrop"),
+        plugins.join("netmojo.omdrop"),
+    )
+    .unwrap();
+    let file = f.root.join("photo.jpg");
+    std::fs::write(&file, "x").unwrap();
+    let sender = f.root.join("sender");
+    let out = f
+        .command_as(
+            Path::new(env!("CARGO_BIN_EXE_omdrop")),
+            &["send", "Studio Mac", file.to_str().unwrap()],
+        )
+        .env("OMDROP_SENDER", &sender)
+        .output()
+        .unwrap();
+    let ev = std::fs::read_to_string(&f.capture).unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Turning it on"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let watch = format!(
+        "--unit=omdrop-watch {} watch --window 10m",
+        plugins.join("netmojo.omdrop/bin/omdrop").display()
+    );
+    assert!(ev.contains(&watch), "{ev}");
+    assert!(!ev.contains(env!("CARGO_BIN_EXE_omdrop")), "{ev}");
+}
+
 /// `handle` with a uwsm-app that keeps what it was given on stdin, the way
 /// the real wl-copy behind it would read it.
 fn handle_capturing_stdin(f: &Fixture, file: &Path, env: &[(&str, &str)]) -> (String, Vec<u8>) {
@@ -909,10 +950,7 @@ fn an_installed_core_older_than_the_plugins_is_offered_an_update() {
     );
     assert!(!r.ids().contains(&"core".to_string()), "{doctor}");
     let out = text(&r.run(&["doctor"]).stdout);
-    assert!(
-        out.contains("\nOptional:\n  - omdrop-core 0.1.0-1"),
-        "{out}"
-    );
+    assert!(out.contains("\nTo do:\n  - omdrop-core 0.1.0-1"), "{out}");
 }
 
 #[test]
@@ -1228,7 +1266,7 @@ fn awdl_with_an_outdated_driver_offers_install_driver_which_builds_it() {
     assert_eq!(
         doctor["missing"].as_array().unwrap()[..2],
         [
-            serde_json::json!({"id": "driver", "say": "The Wi-Fi driver is older than the 0.9.3 this version of Omdrop needs (installed: 0.9.0-1). Update it with: omdrop install-driver"}),
+            serde_json::json!({"id": "driver", "say": "The Wi-Fi driver is older than the 0.10.0 this version of Omdrop needs (installed: 0.9.0-1). Update it with: omdrop install-driver"}),
             serde_json::json!({"id": "radio", "say": AWDL_RADIO}),
         ],
         "{doctor}"
@@ -1251,7 +1289,7 @@ fn awdl_with_an_outdated_driver_offers_install_driver_which_builds_it() {
     with_driver(&r, None);
     assert_eq!(
         r.doctor()["missing"][0]["say"],
-        "The Wi-Fi driver is older than the 0.9.3 this version of Omdrop needs (installed: none). Update it with: omdrop install-driver"
+        "The Wi-Fi driver is older than the 0.10.0 this version of Omdrop needs (installed: none). Update it with: omdrop install-driver"
     );
 }
 
@@ -1356,7 +1394,7 @@ fn a_current_driver_without_a_probe_still_gets_the_firewall_rule_while_ufw_is_ac
     let r = Radio::new();
     r.helper(&backend_helper(None));
     on_a_mac(&r);
-    with_driver(&r, Some("0.9.3-1"));
+    with_driver(&r, Some("0.10.0-1"));
     with_ufw_active(&r);
     assert_installs_only_the_firewall_rule(&r);
 }
@@ -1371,7 +1409,7 @@ fn a_current_driver_with_ufw_inactive_has_nothing_to_do() {
         let r = Radio::new();
         r.helper(&backend_helper(probe.clone()));
         on_a_mac(&r);
-        with_driver(&r, Some("0.9.3-1"));
+        with_driver(&r, Some("0.10.0-1"));
         write_exec(&r.f.root.join("bin/ufw"), "#!/bin/sh\nexit 0\n");
         let out = r.run(&["install-driver"]);
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));

@@ -43,7 +43,7 @@ class InstallCoreTests(unittest.TestCase):
         self.bin = tmp / "bin"
         self.bin.mkdir()
         # pacman answers from CORE_INSTALLED (pacman -Q), CORE_REPO (pacman
-        # -Si) and CORE_OWNER (pacman -Qqo, the package /usr/bin/omdrop is
+        # -Si) and CORE_OWNER (pacman -Qqo, the package OMDROP_CORE is
         # from); unset means absent.
         self.command("pacman", """#!/bin/sh
 if [ "$1" = -Qqo ]; then [ -n "$CORE_OWNER" ] || exit 1; echo "$CORE_OWNER"; exit 0; fi
@@ -72,7 +72,7 @@ exit 0
         self.backend(None)
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ("OMDROP_IMPLEMENTATION", "CORE_INSTALLED", "CORE_REPO",
-                                 "CORE_OWNER", "RECEIVING")}
+                                 "CORE_OWNER", "RECEIVING", "XDG_BIN_HOME")}
         self.env.update(PATH=f"{self.bin}:{self.env['PATH']}",
                         HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / ".config"),
@@ -140,7 +140,7 @@ exit 0
 
     def test_the_text_doctor_lists_the_offer_apart_from_blockers(self):
         out = self.omdrop("doctor").stdout
-        self.assertRegex(out, r"(?s)\nOptional:\n  - omdrop-core.*omdrop install-core")
+        self.assertRegex(out, r"(?s)\nTo do:\n  - omdrop-core.*going away.*omdrop install-core")
 
     def old_core(self, owner=None):
         # An installed core that answers `version` with one older than CORE_MIN.
@@ -174,6 +174,30 @@ exit 0
                 say = self.doctor()["offers"][0]["say"]
                 self.assertTrue(say.endswith(update), say)
                 self.assertNotIn("install-core", say)
+
+    def test_a_core_package_from_before_the_move_off_path_is_offered_as_an_update(self):
+        # omdrop-core 0.1.2 and older installed /usr/bin/omdrop and nothing at
+        # OMDROP_CORE: no hand-off, and install-core replaces the package.
+        self.backend("awdl")
+        self.env["CORE_INSTALLED"] = "0.1.1-1"
+        doctor = self.doctor()
+        self.assertTrue(doctor["ready"], doctor)
+        self.assertEqual([o["id"] for o in doctor["offers"]], ["core"], doctor)
+        say = doctor["offers"][0]["say"]
+        self.assertIn("The installed omdrop-core (0.1.1-1) is older than the", say)
+        self.assertTrue(say.endswith("Update it with: omdrop install-core"), say)
+        self.assertNotIn("not installed", say)
+
+    def test_core_is_installed_off_path_where_the_plugin_looks(self):
+        # The plugin's omdrop is the one command on PATH, so it decides
+        # whether core runs. The package puts core's omdrop beside its other
+        # programs, where the plugin looks, and nothing in /usr/bin.
+        self.assertRegex(OMDROP.read_text(),
+                         r'(?m)^OMDROP_CORE="\$\{OMDROP_CORE:-/usr/lib/omdrop-core/omdrop\}"$')
+        pkgbuild = (ROOT / "core" / "PKGBUILD").read_text()
+        self.assertRegex(pkgbuild, r'(?m)^  local lib="\$\{pkgdir\}/usr/lib/omdrop-core" prog$')
+        self.assertRegex(pkgbuild, r'(?m)^  for prog in omdrop .*; do$')
+        self.assertNotIn("${pkgdir}/usr/bin", pkgbuild)
 
     # --- install-core ---------------------------------------------------------
 
@@ -216,6 +240,41 @@ exit 0
         self.env["CORE_INSTALLED"] = "0.0.1-1"
         code, out = self.install()
         self.assertEqual(code, 0, out)
+        self.assertIn("makepkg", out)
+
+    # The package puts nothing on PATH, and replacing a core that was
+    # /usr/bin/omdrop removes that command, so install-core links the plugin's.
+
+    def link(self):
+        return Path(self.env["HOME"]) / ".local" / "bin" / "omdrop"
+
+    def test_it_puts_the_plugins_command_on_path_before_installing(self):
+        self.env["CORE_INSTALLED"] = "0.1.1-1"
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(os.readlink(self.link()), str(ROOT / "bin" / "omdrop"))
+        said = f"Put the omdrop command on your PATH at {self.link()}."
+        self.assertIn(said, out)
+        self.assertLess(out.index(said), out.index("Opening a terminal"), out)
+        # Already in place: nothing to say.
+        code, out = self.install()
+        self.assertNotIn("Put the omdrop command", out)
+
+    def test_the_link_does_not_wait_for_the_install_to_succeed(self):
+        self.env["CORE_INSTALLED"] = "0.1.1-1"
+        self.env["RECEIVING"] = "1"
+        code, out = self.install()
+        self.assertNotEqual(code, 0)
+        self.assertEqual(os.readlink(self.link()), str(ROOT / "bin" / "omdrop"))
+
+    def test_a_command_of_the_users_own_is_left_alone(self):
+        self.link().parent.mkdir(parents=True)
+        self.link().write_text("#!/bin/sh\necho mine\n")
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.link().is_symlink())
+        self.assertEqual(self.link().read_text(), "#!/bin/sh\necho mine\n")
+        self.assertIn(f"Left {self.link()} alone: it is not ours", out)
         self.assertIn("makepkg", out)
 
     def test_it_refuses_while_receiving(self):

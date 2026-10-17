@@ -12,11 +12,14 @@ OWL on a MediaTek MT7925. The plugin finds the backend's helpers in
 `/usr/lib/omdrop`, on `PATH`, or through `OMDROP_DISCOVERABLE` and
 `OMDROP_SENDER`, and calls them as below.
 
-This page describes the interface the current programs use. omdrop-core
-(`core/`) uses the same `omdrop-discoverable` when a backend ships nothing
+This page describes the interface the bash and Python programs use. Omdrop
+runs omdrop-core (`core/`) instead wherever the radio backend supports it:
+today omdrop-awdl, with omdrop-owl to follow once it ships core's hooks
+(#73). Core uses the same `omdrop-discoverable` when a backend ships nothing
 else. A backend can instead provide per-operation hooks in
 `/usr/lib/omdrop/radio/`, as described in
-[the backend contract](../core/docs/backend-contract.md).
+[the backend contract](../core/docs/backend-contract.md); core then drives the
+radio through them directly.
 
 ## `omdrop-discoverable`
 
@@ -95,9 +98,10 @@ instead of `omdrop install-driver`.
 
 omdrop-awdl 0.10.0 and later answer `probe` through their hooks in
 `/usr/lib/omdrop/radio/` as backend `awdl`, reporting `hardware` (no Broadcom
-chip) and `radio` (brcmfmac not loaded). omdrop-core treats that backend as
-the driver `omdrop install-driver` manages, as it does a helper that doesn't
-answer:
+chip) and `radio` (brcmfmac not loaded). The plugin pins 0.10.0, so
+`omdrop install-driver` brings an older driver up to one with hooks.
+omdrop-core treats that backend as the driver `omdrop install-driver` manages,
+as it does a helper that doesn't answer:
 
 - `omdrop doctor` keeps the probe's items, `hardware` first and alone, and
   adds its own `driver` item, before the probe's, when the installed
