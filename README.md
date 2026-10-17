@@ -211,7 +211,7 @@ rm -rf ~/.omdrop                    # this computer's AirDrop identity
 
 To report a bug or request a feature, [open an issue](https://github.com/netmojo-systems/omdrop-plugin/issues). [Pull requests](https://github.com/netmojo-systems/omdrop-plugin/pulls) are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) lists the setup details, hardware evidence, and tests a pull request needs.
 
-`core/` holds [omdrop-core](core/README.md), a Rust implementation of the `omdrop` command, the receiver, the sender and the root helper. It is optional. On a Mac, `omdrop doctor` offers it, and `omdrop install-core` installs it in a terminal you watch: from your package repositories when they carry this release's version, and otherwise built from this plugin's `core/`. Once it is installed, the plugin hands every command to it. `OMDROP_IMPLEMENTATION=python` keeps the current programs, and `OMDROP_IMPLEMENTATION=rust` insists on core.
+`core/` holds [omdrop-core](core/README.md), a Rust implementation of the `omdrop` command, the receiver, the sender and the root helper. It is optional. On a Mac, `omdrop doctor` offers it, and `omdrop install-core` installs it in a terminal you watch: from your package repositories when they carry this release's version, and otherwise built from this plugin's `core/`. Once it is installed, the plugin hands every command to it, as long as it is at least the version the plugin needs. An older core gets none until it is updated, and `omdrop doctor` says so. `OMDROP_IMPLEMENTATION=python` keeps the current programs, and `OMDROP_IMPLEMENTATION=rust` insists on core.
 
 ## Trademark
 

@@ -42,18 +42,57 @@ CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/airdrop/config.toml"
 SELF="$(readlink -f "$0")"
 PROJ="$(cd "$(dirname "$SELF")/.." && pwd)"
 
+# Whether version $1 is $2 or newer. pacman's vercmp where it exists, which
+# also orders pkgrel and epoch; otherwise coreutils' sort -V, which every
+# distribution has and which orders plain dotted versions, such as the
+# contract a backend reports, the same way once leading zeros are gone
+# (vercmp reads 0.07.0 as 0.7.0; sort -V breaks that tie on the text).
+# Anything else is not taken as newer there: sort -V would put "abc" after
+# "0.7.0", where vercmp puts it before. Debian and Ubuntu have no vercmp, and
+# a bare $(vercmp ...) there is an arithmetic syntax error that reads as "not
+# older".
+version_ge() {
+  if command -v vercmp >/dev/null 2>&1; then
+    (( $(vercmp "$1" "$2") >= 0 ))
+  else
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)*(-[0-9]+(\.[0-9]+)*)?$ ]] || return 1
+    local have want
+    have=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$1")
+    want=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$2")
+    [[ "$(printf '%s\n%s\n' "$have" "$want" | sort -V | head -n 1)" == "$want" ]]
+  fi
+}
+
 # omdrop-core (core/ in this repository) is the same command in Rust, built
-# and installed as its own package. When it is installed, every command goes
-# to it: the panel, the PATH link and the systemd units all run this file, and
-# `exec -a "$0"` lets core find this plugin through the path we were run as.
+# and installed as its own package. When a core this plugin can use is
+# installed, every command goes to it: the panel, the PATH link and the
+# systemd units all run this file, and `exec -a "$0"` lets core find this
+# plugin through the path we were run as.
 # OMDROP_IMPLEMENTATION picks the stack: python keeps this script and the
-# Python programs; rust requires core; unset uses core when it is installed.
-# Anything else is refused, so a typo cannot quietly pick a stack.
+# Python programs; rust requires a usable core; unset uses core when a usable
+# one is installed. Anything else is refused, so a typo cannot quietly pick a
+# stack.
 # install-core never goes to core, whatever OMDROP_IMPLEMENTATION says: it is
 # how core gets installed or updated, and a core older than install-core would
 # answer it with its usage. With rust and no core it runs here for the same
 # reason. OMDROP_CORE moves the binary for tests. Never hand off to ourselves: a
 # /usr/bin/omdrop that is a link to this file would loop.
+#
+# CORE_MIN is the oldest core this plugin hands off to. New features land
+# only in core/, so a plugin update can rely on a command or flag an older
+# core does not have: on Arch until install-core runs, and wherever core comes
+# with another package whose pin lags this plugin. Below it, or when its
+# version cannot be read, this script and the Python programs run instead and
+# doctor says so. The version is core's own (its `version` line, the workspace
+# version in core/Cargo.toml), not pacman's, which knows nothing of a core
+# installed another way. Asking costs about a millisecond. Raise CORE_MIN, and
+# core's pkgver with it, when the plugin starts relying on something newer;
+# 0.1.2 treats omdrop-awdl's hooks as the driver install-driver manages.
+CORE_MIN=0.1.2
+CORE_TOO_OLD=
+core_version() {
+  timeout -k 1 2 "$OMDROP_CORE" version </dev/null 2>/dev/null | sed -n 's/^omdrop-core \([^[:space:]]*\)$/\1/p' | head -n 1
+}
 OMDROP_CORE="${OMDROP_CORE:-/usr/bin/omdrop}"
 case "${OMDROP_IMPLEMENTATION:-}" in
   python) ;;
@@ -61,7 +100,16 @@ case "${OMDROP_IMPLEMENTATION:-}" in
     if [[ "${1:-}" == install-core ]]; then
       :
     elif [[ -x "$OMDROP_CORE" && "$(readlink -f "$OMDROP_CORE")" != "$SELF" ]]; then
-      exec -a "$0" "$OMDROP_CORE" "$@"
+      CORE_TOO_OLD=$(core_version)
+      if [[ -n "$CORE_TOO_OLD" ]] && version_ge "$CORE_TOO_OLD" "$CORE_MIN"; then
+        exec -a "$0" "$OMDROP_CORE" "$@"
+      fi
+      CORE_TOO_OLD=${CORE_TOO_OLD:-unknown}
+      if [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
+        printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but the omdrop-core at %s (version %s) is older than the %s this version of Omdrop needs.\n' \
+          "$OMDROP_CORE" "$CORE_TOO_OLD" "$CORE_MIN" >&2
+        exit 2
+      fi
     elif [[ -n "${OMDROP_IMPLEMENTATION:-}" ]]; then
       printf 'omdrop: OMDROP_IMPLEMENTATION=rust, but omdrop-core is not installed at %s.\n' "$OMDROP_CORE" >&2
       exit 2
@@ -588,27 +636,6 @@ cmd_identity() {
       esac ;;
     *) die "usage: omdrop identity [status [--json] | unlock | lock | 1password ...]" ;;
   esac
-}
-
-# Whether version $1 is $2 or newer. pacman's vercmp where it exists, which
-# also orders pkgrel and epoch; otherwise coreutils' sort -V, which every
-# distribution has and which orders plain dotted versions, such as the
-# contract a backend reports, the same way once leading zeros are gone
-# (vercmp reads 0.07.0 as 0.7.0; sort -V breaks that tie on the text).
-# Anything else is not taken as newer there: sort -V would put "abc" after
-# "0.7.0", where vercmp puts it before. Debian and Ubuntu have no vercmp, and
-# a bare $(vercmp ...) there is an arithmetic syntax error that reads as "not
-# older".
-version_ge() {
-  if command -v vercmp >/dev/null 2>&1; then
-    (( $(vercmp "$1" "$2") >= 0 ))
-  else
-    [[ "$1" =~ ^[0-9]+(\.[0-9]+)*(-[0-9]+(\.[0-9]+)*)?$ ]] || return 1
-    local have want
-    have=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$1")
-    want=$(sed -E 's/(^|[.-])0+([0-9])/\1\2/g' <<<"$2")
-    [[ "$(printf '%s\n%s\n' "$have" "$want" | sort -V | head -n 1)" == "$want" ]]
-  fi
 }
 
 # Moving the Apple identity off disk needs a driver whose sender follows the
@@ -1202,10 +1229,29 @@ core_supported() {
 
 # Optional, never a blocker: the Python version receives as well. Not offered
 # to someone who chose the Python version by name. This script runs only while
-# core is not installed, or when OMDROP_IMPLEMENTATION=python; an installed
+# no usable core is installed, or when OMDROP_IMPLEMENTATION=python; a usable
 # core reports its own updates.
+#
+# A core older than CORE_MIN is installed but gets no commands, so say so,
+# and name what updates it: install-core for the omdrop-core package where it
+# offers one, otherwise the package /usr/bin/omdrop belongs to.
 core_offers() {
   [[ "${OMDROP_IMPLEMENTATION:-}" == python ]] && return 0
+  if [[ -n "$CORE_TOO_OLD" ]]; then
+    local owner how
+    owner=$(pacman -Qqo "$OMDROP_CORE" 2>/dev/null) \
+      || owner=$(dpkg-query -S "$OMDROP_CORE" 2>/dev/null | sed -n '1s/:.*//p') \
+      || owner=
+    if [[ "$owner" == "$CORE_PKG" ]] && core_wanted >/dev/null && core_supported; then
+      how="Update it with: omdrop install-core"
+    elif [[ -n "$owner" ]]; then
+      how="Update the $owner package, which provides it."
+    else
+      how="Update the package that provides it."
+    fi
+    printf 'core\t%s\n' "The installed omdrop-core ($CORE_TOO_OLD) is older than the $CORE_MIN this version of Omdrop needs, so Omdrop is running its Python version instead. $how"
+    return 0
+  fi
   core_wanted >/dev/null && core_supported || return 0
   pacman -Q "$CORE_PKG" >/dev/null 2>&1 && return 0
   printf 'core\t%s\n' "omdrop-core, the Rust version of Omdrop, is not installed. It is optional; install it with: omdrop install-core"
