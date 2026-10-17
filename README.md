@@ -32,6 +32,17 @@ On first use, the panel opens a terminal that asks for your password to:
 
 `omdrop` is always the plugin's command, at `~/.local/bin/omdrop`. `omdrop setup` creates it, and so does the first `omdrop on`, including turning Omdrop on from the panel; to get it before either, run `~/.config/omarchy/plugins/netmojo.omdrop/bin/omdrop setup`. It runs omdrop-core when that is installed and current, and the bash and Python programs otherwise. Run `omdrop --version` to include the version in bug reports.
 
+### From the omdrop package
+
+Once the `omdrop` package is in Omarchy's package repository, it installs the plugin and omdrop-core together, and updates both with the rest of the system:
+
+```bash
+omarchy pkg add omdrop      # plain Arch: sudo pacman -S omdrop
+/usr/bin/omdrop setup       # once per user: adds the widget to the bar
+```
+
+The package puts the plugin in `/usr/share/omdrop`, and `setup` links it into `~/.config/omarchy/plugins`. Run it as `/usr/bin/omdrop` the first time: if you installed Omdrop before with `omarchy plugin add`, a plain `omdrop` may still run that copy, from `~/.local/bin`. `setup` asks before replacing that copy, and moves it aside to a hidden `.netmojo.omdrop.replaced-<date>` directory beside it rather than deleting it. Afterwards `omdrop` runs the package. The radio still comes from its own package: `brcmfmac-awdl-dkms` on a Mac, `omdrop-owl` on other Wi-Fi cards.
+
 ### omdrop-core
 
 Omdrop runs as omdrop-core, its Rust version, wherever the radio backend supports it, and as its bash and Python programs on other backends. Today omdrop-core supports omdrop-awdl; omdrop-owl follows once it ships omdrop-core's hooks ([#73](https://github.com/netmojo-systems/omdrop-plugin/issues/73)).
@@ -44,7 +55,8 @@ omdrop install-core
 
 It first puts the plugin's `omdrop` command at `~/.local/bin/omdrop` if it isn't there, following the same rules as `omdrop setup`, so you keep the command even if the install fails. It then opens a terminal that asks for your password and installs the `omdrop-core` package: from your package repositories when they carry the version this release needs, and otherwise built from the plugin's `core/`. With any other backend, it refuses and installs nothing.
 
-- Once omdrop-core is installed and at least the version this release needs, the plugin's `omdrop` hands every command to it, including the panel's. omdrop-core's own `omdrop` sits at `/usr/lib/omdrop-core/omdrop`, off your `PATH`, so every command goes through the plugin's.
+- Once omdrop-core is installed and at least the version this release needs, and the radio backend ships omdrop-core's hooks (omdrop-awdl 0.10.0 and later), the plugin's `omdrop` hands every command to it, including the panel's. omdrop-core's own `omdrop` sits at `/usr/lib/omdrop-core/omdrop`, off your `PATH`, so every command goes through the plugin's.
+- With a backend that has no hooks, omdrop-core gets no commands. On a Mac, `omdrop doctor` says to update the driver with `omdrop install-driver`.
 - An older omdrop-core gets no commands: the bash and Python programs run instead, and `omdrop doctor` says how to update it.
 - Without omdrop-core, the bash and Python programs run, and everything above works the same.
 - `OMDROP_IMPLEMENTATION=python` keeps the bash and Python programs with omdrop-core installed; `OMDROP_IMPLEMENTATION=rust` refuses to run without it.

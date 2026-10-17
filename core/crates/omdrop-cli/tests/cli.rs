@@ -1948,3 +1948,205 @@ fn a_missing_sender_names_the_backend_not_install_driver() {
         );
     }
 }
+
+/// The fixture's plugin, as the omdrop package installs it: under a root that
+/// OMDROP_PACKAGE_ROOT names in place of /usr. Omarchy's two plugin commands
+/// are stubbed to log their calls.
+fn packaged(f: &Fixture) -> (PathBuf, PathBuf) {
+    let log = r#"printf '%s\n' "$(basename "$0") $*" >> "$CAPTURE""#;
+    for name in ["omarchy-shell", "omarchy-plugin-enable"] {
+        // ENABLE_RC makes adding the widget fail.
+        write_exec(
+            &f.root.join("bin").join(name),
+            &format!("#!/bin/sh\n{log}\nexit \"${{ENABLE_RC:-0}}\"\n"),
+        );
+    }
+    let plugin = std::fs::canonicalize(f.root.join("plugins/netmojo.omdrop")).unwrap();
+    let target = f.root.join("home/.config/omarchy/plugins/netmojo.omdrop");
+    (plugin, target)
+}
+
+fn root_env(f: &Fixture) -> String {
+    f.root.display().to_string()
+}
+
+#[test]
+fn setup_links_a_packaged_plugin_into_the_shells_plugins_once() {
+    let f = Fixture::new();
+    let (plugin, target) = packaged(&f);
+    let root = root_env(&f);
+    let (out, ev) = f.run(&["setup"], &[("OMDROP_PACKAGE_ROOT", &root)]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(std::fs::read_link(&target).unwrap(), plugin);
+    assert!(text(&out.stdout).contains("Added Omdrop to the shell's plugins"));
+    assert!(ev.contains("omarchy-shell shell rescanPlugins"), "{ev}");
+    assert!(ev.contains("omarchy-plugin-enable netmojo.omdrop"), "{ev}");
+
+    // Already linked: nothing to do, and the widget is not added twice.
+    let (out, ev) = f.run(&["setup"], &[("OMDROP_PACKAGE_ROOT", &root)]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(ev.matches("omarchy-plugin-enable").count(), 1, "{ev}");
+}
+
+#[test]
+fn setup_from_a_checkout_links_nothing() {
+    let f = Fixture::new();
+    let (_, target) = packaged(&f);
+    let (out, _) = f.run(&["setup"], &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(!target.exists() && std::fs::symlink_metadata(&target).is_err());
+}
+
+#[test]
+fn a_previous_installation_is_kept_without_a_terminal() {
+    // The panel's first `omdrop on` runs setup with no one to ask.
+    let f = Fixture::new();
+    let (_, target) = packaged(&f);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("marker"), "git clone").unwrap();
+    let (out, ev) = f.run(&["setup"], &[("OMDROP_PACKAGE_ROOT", &root_env(&f))]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        std::fs::read_to_string(target.join("marker")).unwrap(),
+        "git clone"
+    );
+    assert!(
+        text(&out.stderr).contains("Run omdrop setup in a terminal to replace it"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(!ev.contains("omarchy-plugin-enable"), "{ev}");
+}
+
+#[test]
+fn a_previous_installation_is_replaced_when_the_user_agrees() {
+    // script(1) gives setup the terminal its question needs; Enter is Yes.
+    let Ok(script) = which_script() else {
+        eprintln!("skipped: no script(1)");
+        return;
+    };
+    let f = Fixture::new();
+    let (plugin, target) = packaged(&f);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("marker"), "git clone").unwrap();
+    std::fs::write(target.join("manifest.json"), r#"{"version": "0.0.1"}"#).unwrap();
+    let mut cmd = f.command_as(
+        &script,
+        &[
+            "-qec",
+            &format!("{} setup", f.omdrop.display()),
+            "/dev/null",
+        ],
+    );
+    cmd.env("OMDROP_PACKAGE_ROOT", root_env(&f))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stdout).contains("Previous Omdrop plugin installation detected at",)
+            && text(&out.stdout)
+                .contains("will replace it with a newer version (0.0.1 → 9.9.9). Continue? (Y/n)"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert_eq!(std::fs::read_link(&target).unwrap(), plugin);
+    let aside: Vec<_> = std::fs::read_dir(target.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".netmojo.omdrop.replaced-")
+        })
+        .collect();
+    assert_eq!(aside.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(aside[0].path().join("marker")).unwrap(),
+        "git clone"
+    );
+}
+
+fn which_script() -> Result<PathBuf, ()> {
+    ["/usr/bin/script", "/bin/script"]
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+        .ok_or(())
+}
+
+#[test]
+fn end_of_input_keeps_the_previous_installation() {
+    // Ctrl-D at the question is No; only an empty line is Yes.
+    let Ok(script) = which_script() else {
+        eprintln!("skipped: no script(1)");
+        return;
+    };
+    let f = Fixture::new();
+    let (_, target) = packaged(&f);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("marker"), "git clone").unwrap();
+    let mut cmd = f.command_as(
+        &script,
+        &[
+            "-qec",
+            &format!("{} setup", f.omdrop.display()),
+            "/dev/null",
+        ],
+    );
+    cmd.env("OMDROP_PACKAGE_ROOT", root_env(&f))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(b"\x04").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stdout));
+    assert_eq!(
+        std::fs::read_to_string(target.join("marker")).unwrap(),
+        "git clone"
+    );
+}
+
+#[test]
+fn a_failed_widget_add_is_retried_until_it_works_and_not_after() {
+    let f = Fixture::new();
+    packaged(&f);
+    let root = root_env(&f);
+    let (out, _) = f.run(
+        &["setup"],
+        &[("OMDROP_PACKAGE_ROOT", &root), ("ENABLE_RC", "1")],
+    );
+    assert!(
+        text(&out.stderr).contains("The next omdrop setup tries again"),
+        "{}",
+        text(&out.stderr)
+    );
+    f.run(&["setup"], &[("OMDROP_PACKAGE_ROOT", &root)]);
+    let (_, ev) = f.run(&["setup"], &[("OMDROP_PACKAGE_ROOT", &root)]);
+    // Once when it failed, once when it worked, and never again: a user who
+    // removes the widget keeps it removed.
+    assert_eq!(ev.matches("omarchy-plugin-enable").count(), 2, "{ev}");
+}
+
+#[test]
+fn a_packaged_setup_leaves_the_path_link_alone() {
+    // /usr/bin/omdrop is the command; a link to an older copy names the path
+    // under ~/.config, which the package's link takes over.
+    let f = Fixture::new();
+    let (_, target) = packaged(&f);
+    let link = f.root.join("home/.local/bin/omdrop");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target.join("bin/omdrop"), &link).unwrap();
+    let (out, _) = f.run(&["setup"], &[("OMDROP_PACKAGE_ROOT", &root_env(&f))]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        target.join("bin/omdrop")
+    );
+}

@@ -340,6 +340,11 @@ fn installed_pkg(name: &str) -> Option<String> {
     Some(text.rsplit(' ').next().unwrap_or_default().to_string())
 }
 
+/// Whether version `a` is older than `b`, in pacman's order.
+pub fn version_lt(a: &str, b: &str) -> bool {
+    vercmp(a, b).is_lt()
+}
+
 /// pacman's version order (libalpm's `alpm_pkg_vercmp`), here rather than by
 /// running `vercmp`: Debian and Ubuntu have no `vercmp`, and treating its
 /// absence as "not older" let any backend contract through the identity

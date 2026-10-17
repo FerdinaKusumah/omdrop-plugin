@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::config::{cfg_get, cfg_set, default_name, effective_name};
+use crate::config::{cfg_get, cfg_set, default_name, effective_name, setting_get, setting_set};
 use crate::ctx::{DEFAULT_WINDOW, ID_EXPIRY, UNIT, WATCH, WINDOW, ctx};
 use crate::driver::{awdl_link_local, prereqs_missing};
 use crate::identity::{
@@ -799,7 +799,17 @@ pub fn setup_install() -> bool {
         did = true;
         outln!("Set up the service that receives files.");
     }
-    if link_command() {
+    // A packaged copy has /usr/bin/omdrop. An existing ~/.local/bin/omdrop
+    // names the plugin's path under ~/.config, so it follows the copy
+    // link_plugin puts there, and keeps following the old one if the user
+    // declines.
+    if !plugin_packaged(&plugin) && link_command() {
+        did = true;
+    }
+    if link_plugin(&plugin) {
+        did = true;
+    }
+    if add_widget(&plugin) {
         did = true;
     }
     // Received links are stored as .url files, and a Mac may send a .webloc.
@@ -895,6 +905,153 @@ fn link_command() -> bool {
         );
     }
     false
+}
+
+/// Whether this plugin is the omdrop package's copy: one under /usr, or
+/// under OMDROP_PACKAGE_ROOT for tests.
+fn plugin_packaged(plugin: &Path) -> bool {
+    let real = std::fs::canonicalize(plugin).unwrap_or_else(|_| plugin.to_path_buf());
+    let root = crate::util::env_nonempty("OMDROP_PACKAGE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr"));
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    real.starts_with(&root) && real != root
+}
+
+/// Link a packaged plugin (the omdrop package's /usr/share/omdrop) into
+/// ~/.config/omarchy/plugins, the only place the shell loads third-party
+/// plugins from, and which a package cannot write to. Only a copy under /usr
+/// does this: setup run from a development checkout never touches the user's
+/// installed plugin.
+///
+/// A previous installation (a git or marketplace clone, or a link to another
+/// copy) is replaced only after the user agrees, which needs a terminal; the
+/// panel's first `omdrop on` runs setup without one, so it is left in place
+/// with a warning. A replaced clone is moved aside to a hidden directory,
+/// which the shell ignores, not deleted. Same as the plugin's bash.
+/// OMDROP_PACKAGE_ROOT moves /usr for tests; it only decides whether setup
+/// links the plugin into the user's own home, so it grants nothing.
+fn link_plugin(plugin: &Path) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !plugin_packaged(plugin) {
+        return false;
+    }
+    let real = std::fs::canonicalize(plugin).unwrap_or_else(|_| plugin.to_path_buf());
+    let dir = PathBuf::from(format!("{}/.config/omarchy/plugins", home()));
+    let target = dir.join(crate::ctx::PLUGIN_ID);
+    let real_s = real.to_string_lossy().into_owned();
+    let is_link = std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
+    if is_link && readlink_f(&target).as_deref() == Some(real_s.as_str()) {
+        return false;
+    }
+    if is_link && !target.exists() {
+        let _ = std::fs::remove_file(&target);
+    } else if lexists(&target) {
+        let old = readlink_f(&target).unwrap_or_else(|| target.to_string_lossy().into_owned());
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            errln!(
+                "A previous Omdrop plugin installation is at {old}, so the shell still runs it rather than the omdrop package. Run omdrop setup in a terminal to replace it."
+            );
+            return false;
+        }
+        let have = manifest_version(&target);
+        let want = manifest_version(&real);
+        let with = match (&have, &want) {
+            (Some(h), Some(w)) if crate::driver::version_lt(h, w) => {
+                format!("with a newer version ({h} → {w})")
+            }
+            _ => format!(
+                "with version {} (installed: {})",
+                want.as_deref().unwrap_or("unknown"),
+                have.as_deref().unwrap_or("unknown")
+            ),
+        };
+        print!(
+            "Previous Omdrop plugin installation detected at {old}. This package will replace it {with}. Continue? (Y/n) "
+        );
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        // End of input (Ctrl-D) is No; an empty line is Yes.
+        if !matches!(std::io::stdin().lock().read_line(&mut answer), Ok(n) if n > 0) {
+            answer = "n".into();
+        }
+        if !matches!(
+            answer.trim().to_ascii_lowercase().as_str(),
+            "" | "y" | "yes"
+        ) {
+            outln!("Left {old} in place: the shell keeps running it, not the omdrop package.");
+            return false;
+        }
+        if is_link {
+            if std::fs::remove_file(&target).is_err() {
+                errln!("omdrop could not remove the link {}.", target.display());
+                return false;
+            }
+        } else {
+            let (_, stamp) = crate::proc::capture("date", &["+%Y%m%d-%H%M%S"]);
+            let stamp = String::from_utf8_lossy(&stamp).trim().to_string();
+            let aside = dir.join(format!(".{}.replaced-{stamp}", crate::ctx::PLUGIN_ID));
+            if std::fs::rename(&target, &aside).is_err() {
+                errln!(
+                    "omdrop could not move {} aside, so it left it in place.",
+                    target.display()
+                );
+                return false;
+            }
+            outln!(
+                "Moved the previous installation to {}. Delete it once Omdrop works from the package.",
+                aside.display()
+            );
+        }
+    }
+    let made =
+        std::fs::create_dir_all(&dir).and_then(|()| std::os::unix::fs::symlink(&real, &target));
+    if made.is_err() {
+        errln!(
+            "omdrop could not link {} to {real_s}, so the bar has no Omdrop widget. Create the link by hand: ln -s {real_s} {}",
+            target.display(),
+            target.display()
+        );
+        return false;
+    }
+    outln!(
+        "Added Omdrop to the shell's plugins: {} links to {real_s}.",
+        target.display()
+    );
+    run_quiet("omarchy-shell", &["shell", "rescanPlugins"]);
+    true
+}
+
+/// Add the packaged plugin's widget to the bar, once. Kept apart from the
+/// link, so a failed `omarchy plugin enable` is retried by the next setup,
+/// and remembered once it worked, so a user who later removes the widget
+/// keeps it removed. Same as the plugin's bash.
+fn add_widget(plugin: &Path) -> bool {
+    let real = std::fs::canonicalize(plugin).unwrap_or_else(|_| plugin.to_path_buf());
+    let target =
+        PathBuf::from(format!("{}/.config/omarchy/plugins", home())).join(crate::ctx::PLUGIN_ID);
+    let linked = std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink())
+        && readlink_f(&target).as_deref() == Some(&*real.to_string_lossy());
+    if !linked || setting_get("widget_added") == "1" {
+        return false;
+    }
+    if run_quiet("omarchy-plugin-enable", &[crate::ctx::PLUGIN_ID]) == 0 {
+        setting_set("widget_added", "1");
+        outln!("Added its widget to the bar.");
+        return true;
+    }
+    errln!(
+        "omdrop could not add its widget to the bar. The next omdrop setup tries again, or run: omarchy plugin enable {}",
+        crate::ctx::PLUGIN_ID
+    );
+    false
+}
+
+/// The version a plugin directory's manifest.json declares.
+fn manifest_version(dir: &Path) -> Option<String> {
+    let text = std::fs::read(dir.join("manifest.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&text).ok()?;
+    v.get("version")?.as_str().map(str::to_string)
 }
 
 /// `readlink -f`: every link followed; a missing last component is allowed.
