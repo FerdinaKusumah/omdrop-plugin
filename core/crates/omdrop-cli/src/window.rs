@@ -938,6 +938,13 @@ pub fn cmd_setup() -> i32 {
             outln!("  - {say}");
         }
     }
+    let offers = crate::driver::core_offers();
+    if !offers.is_empty() {
+        outln!("\nOptional:");
+        for (_, say) in &offers {
+            outln!("  - {say}");
+        }
+    }
     crate::links::skills_offer();
     0
 }

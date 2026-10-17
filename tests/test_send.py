@@ -148,7 +148,10 @@ exit 1
             SENDER_STDOUT=SENT,
             LIST_RC="",
             SENDER_RC="",
-            OMDROP_NAME_WAIT="1",
+            # bash counts this wait in whole seconds of the clock (see
+            # start_on_a_clock_tick), so a lookup that is meant to finish gets
+            # room to; the tests that time the deadline set their own.
+            OMDROP_NAME_WAIT="30",
             LIST_SLEEP="",
             LIST_POST_SLEEP="",
             LIST_CLOSE_OUTPUT="",
@@ -627,6 +630,14 @@ class SendCommandTests(SenderFixture):
 
 
 class NamedRecipientTests(SenderFixture):
+    def start_on_a_clock_tick(self):
+        # bash's SECONDS steps whenever the wall clock passes a whole second,
+        # so a one-second OMDROP_NAME_WAIT ends at the next whole second:
+        # anywhere from a moment to a second after the lookup starts. Tests
+        # that time a one-second lookup start just after a whole second, so
+        # the lookup has close to all of it.
+        time.sleep(1 - time.time() % 1)
+
     def test_a_name_that_answers_on_a_later_lookup_is_found(self):
         self.env.update(
             OMDROP_NAME_WAIT="10",
@@ -704,7 +715,8 @@ class NamedRecipientTests(SenderFixture):
                 self.assertEqual(self.capture_list.read_text().splitlines(), expected)
 
     def test_no_match_reports_answers_and_respects_the_retry_deadline(self):
-        self.env["PEER_LIST"] = f"{ONE_PEER}  Studio Phone"
+        self.env.update(OMDROP_NAME_WAIT="1", PEER_LIST=f"{ONE_PEER}  Studio Phone")
+        self.start_on_a_clock_tick()
         start = time.monotonic()
 
         result = subprocess.run([OMDROP, "send", "Studio Mac", str(self.file)],
@@ -741,7 +753,8 @@ class NamedRecipientTests(SenderFixture):
                 self.assertNotIn("value too great", result.stderr)
 
     def assert_lookup_is_bounded(self, **settings):
-        self.env.update(settings)
+        self.env.update(OMDROP_NAME_WAIT="1", **settings)
+        self.start_on_a_clock_tick()
         start = time.monotonic()
         result = subprocess.run([OMDROP, "send", "Studio Mac", str(self.file)],
                                 env=self.env, capture_output=True, text=True, timeout=8)

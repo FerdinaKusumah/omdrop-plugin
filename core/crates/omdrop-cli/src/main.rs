@@ -91,6 +91,8 @@ const USAGE: &str = r#"omdrop -- send and receive files with nearby Apple device
                     opens received links on double-click. Safe to run again.
   doctor [--json]   what is still missing before this can receive
   install-driver    build and install the Wi-Fi driver, in a terminal you watch
+  install-core      install omdrop-core, the Rust version of Omdrop, built from
+                    this plugin, in a terminal you watch
   firewall ACTION   install or remove Omdrop's narrow UFW receiver rule
   links ACTION      install or remove the double-click handler for received
                     .url and .webloc links
@@ -177,6 +179,7 @@ fn main() {
         "skill" | "skills" => links::cmd_skill(&s),
         "open-link" => links::cmd_open_link(rest),
         "install-driver" => driver::cmd_install_driver(),
+        "install-core" => driver::cmd_install_core(),
         "firewall" => driver::cmd_firewall(&s),
         "act" => links::cmd_act(rest),
         "watch" => links::cmd_watch(&s),

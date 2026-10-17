@@ -831,7 +831,10 @@ fn a_ready_backend_leaves_only_the_plugins_own_findings() {
         .collect();
     assert!(ids.iter().all(|i| *i == "library"), "{doctor}");
     if receiver_libs_here() {
-        assert_eq!(doctor, serde_json::json!({"ready": true, "missing": []}));
+        assert_eq!(
+            doctor,
+            serde_json::json!({"ready": true, "missing": [], "offers": []})
+        );
         let out = r.run(&["doctor"]);
         assert!(
             text(&out.stdout).starts_with("Ready to receive.\n"),
@@ -839,6 +842,103 @@ fn a_ready_backend_leaves_only_the_plugins_own_findings() {
             text(&out.stdout)
         );
     }
+}
+
+/// The plugin carries omdrop-core 0.2.0-1; pacman reports `installed`.
+fn with_core(r: &Radio, installed: &str) {
+    let core = r.f.root.join("plugins/netmojo.omdrop/core");
+    std::fs::create_dir_all(&core).unwrap();
+    std::fs::write(
+        core.join("PKGBUILD"),
+        "pkgname=omdrop-core\npkgver=0.2.0\npkgrel=1\n",
+    )
+    .unwrap();
+    write_exec(
+        &r.f.root.join("bin/pacman"),
+        &format!(
+            "#!/bin/sh\n[ \"$1 $2\" = '-Q omdrop-core' ] || exit 1\necho 'omdrop-core {installed}'\n"
+        ),
+    );
+}
+
+fn awdl() -> serde_json::Value {
+    serde_json::json!({
+        "backend": "awdl", "version": "0.10.0", "hardware": true, "contract": "0.7.0",
+        "missing": [],
+    })
+}
+
+#[test]
+fn an_installed_core_older_than_the_plugins_is_offered_an_update() {
+    let r = Radio::new();
+    r.helper(&backend_helper(Some(awdl())));
+    with_core(&r, "0.1.0-1");
+    let doctor = r.doctor();
+    let offers = doctor["offers"].as_array().unwrap();
+    assert_eq!(offers.len(), 1, "{doctor}");
+    assert_eq!(offers[0]["id"], "core");
+    let say = offers[0]["say"].as_str().unwrap();
+    assert!(
+        say.contains("0.1.0-1") && say.contains("0.2.0-1") && say.contains("omdrop install-core"),
+        "{say}"
+    );
+    assert!(!r.ids().contains(&"core".to_string()), "{doctor}");
+    let out = text(&r.run(&["doctor"]).stdout);
+    assert!(
+        out.contains("\nOptional:\n  - omdrop-core 0.1.0-1"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_current_core_or_an_untested_backend_is_offered_nothing() {
+    let mut no_hardware = awdl();
+    no_hardware["hardware"] = serde_json::json!(false);
+    for (backend, installed) in [
+        (awdl(), "0.2.0-1"),
+        (owl(serde_json::json!([])), "0.1.0-1"),
+        (no_hardware, "0.1.0-1"),
+    ] {
+        let r = Radio::new();
+        r.helper(&backend_helper(Some(backend.clone())));
+        with_core(&r, installed);
+        assert_eq!(
+            r.doctor()["offers"],
+            serde_json::json!([]),
+            "{backend} {installed}"
+        );
+    }
+}
+
+/// One installer: core hands `install-core` to the plugin's own bin/omdrop,
+/// run as the Python version so it does not hand straight back.
+#[test]
+fn install_core_runs_the_plugins_installer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin = tmp.path().join("config/omarchy/plugins/netmojo.omdrop");
+    std::fs::create_dir_all(plugin.join("bin")).unwrap();
+    std::fs::write(plugin.join("manifest.json"), r#"{"version": "9.9.9"}"#).unwrap();
+    let record = tmp.path().join("ran");
+    write_exec(
+        &plugin.join("bin/omdrop"),
+        &format!(
+            "#!/bin/sh\necho \"$* $OMDROP_IMPLEMENTATION\" > '{}'\nexit 7\n",
+            record.display()
+        ),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_omdrop"))
+        .arg("install-core")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(7), "{}", text(&out.stderr));
+    assert_eq!(
+        std::fs::read_to_string(&record).unwrap(),
+        "install-core python\n"
+    );
 }
 
 #[test]

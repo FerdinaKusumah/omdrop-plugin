@@ -38,9 +38,10 @@ The first time you turn Omdrop on, it finishes setting up and installs the `omdr
 omarchy plugin update netmojo.omdrop   # fetch the latest release
 omarchy-restart-shell                  # the bar loads the new panel only after a shell restart
 omdrop install-driver                  # on a Mac, rebuild the driver if the new release needs a newer one
+omdrop install-core                    # if you use omdrop-core, update it to the version this release carries
 ```
 
-`omdrop install-driver` does nothing when everything it installs is already current. On a PC, update the radio backend through its own package: `omdrop install-driver` leaves it alone. If Omdrop is on while you upgrade, turn it off and on again: the receiver keeps running the old version until it restarts.
+`omdrop install-driver` and `omdrop install-core` do nothing when everything they install is already current. On a PC, update the radio backend through its own package: `omdrop install-driver` leaves it alone. If Omdrop is on while you upgrade, turn it off and on again: the receiver keeps running the old version until it restarts.
 
 ## Receive files
 
@@ -210,7 +211,7 @@ rm -rf ~/.omdrop                    # this computer's AirDrop identity
 
 To report a bug or request a feature, [open an issue](https://github.com/netmojo-systems/omdrop-plugin/issues). [Pull requests](https://github.com/netmojo-systems/omdrop-plugin/pulls) are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) lists the setup details, hardware evidence, and tests a pull request needs.
 
-`core/` holds [omdrop-core](core/README.md), a Rust implementation of the `omdrop` command, the receiver, the sender and the root helper. It is not released yet. Once installed as its own package, the plugin hands every command to it. `OMDROP_IMPLEMENTATION=python` keeps the current programs, and `OMDROP_IMPLEMENTATION=rust` insists on core.
+`core/` holds [omdrop-core](core/README.md), a Rust implementation of the `omdrop` command, the receiver, the sender and the root helper. It is optional. On a Mac, `omdrop doctor` offers it, and `omdrop install-core` installs it in a terminal you watch: from your package repositories when they carry this release's version, and otherwise built from this plugin's `core/`. Once it is installed, the plugin hands every command to it. `OMDROP_IMPLEMENTATION=python` keeps the current programs, and `OMDROP_IMPLEMENTATION=rust` insists on core.
 
 ## Trademark
 

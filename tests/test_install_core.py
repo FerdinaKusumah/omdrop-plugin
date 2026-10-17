@@ -1,0 +1,240 @@
+"""omdrop-core is offered, never required, and installed from this plugin.
+
+`doctor` lists it under `offers`, which never makes the plugin unready, on the
+hardware core has been tested on. `install-core` installs the plugin's own
+core/: from a repository that carries that version or newer, otherwise built
+from core/ with makepkg in a terminal the user watches.
+"""
+import json
+import os
+import re
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+OMDROP = ROOT / "bin" / "omdrop"
+
+
+def core_wanted():
+    text = (ROOT / "core" / "PKGBUILD").read_text()
+    ver = re.search(r"^pkgver=(\S+)$", text, re.M).group(1)
+    rel = re.search(r"^pkgrel=(\S+)$", text, re.M).group(1)
+    return f"{ver}-{rel}"
+
+
+def probe_helper(backend, hardware=True):
+    """An omdrop-discoverable: omdrop-awdl 0.9.x's (no probe) for None, else
+    one whose probe names BACKEND, reports HARDWARE, and nothing missing."""
+    if backend is None:
+        return '#!/bin/sh\necho "usage: omdrop-discoverable start|stop|status" >&2\nexit 2\n'
+    answer = json.dumps({"backend": backend, "version": "1.0.0", "contract": "0.7.0",
+                         "hardware": hardware, "missing": []})
+    return f"#!/bin/sh\n[ \"$1\" = probe ] || exit 2\ncat <<'EOF'\n{answer}\nEOF\n"
+
+
+class InstallCoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        tmp = Path(self.tmp.name)
+        self.bin = tmp / "bin"
+        self.bin.mkdir()
+        # pacman answers from CORE_INSTALLED (pacman -Q) and CORE_REPO
+        # (pacman -Si); unset means absent.
+        self.command("pacman", """#!/bin/sh
+[ "$2" = omdrop-core ] || exit 1
+case "$1" in
+  -Q) [ -n "$CORE_INSTALLED" ] || exit 1; echo "omdrop-core $CORE_INSTALLED" ;;
+  -Si) [ -n "$CORE_REPO" ] || exit 1
+       printf 'Repository      : extra\\nName            : omdrop-core\\nVersion         : %s\\n' "$CORE_REPO" ;;
+  *) exit 1 ;;
+esac
+""")
+        # The receiver's unit is installed; RECEIVING makes it active.
+        self.command("systemctl", """#!/bin/sh
+case "$*" in
+  *is-active*airdrop-receiver*) [ -n "$RECEIVING" ] && { echo active; exit 0; }; echo inactive; exit 3 ;;
+  *is-active*) exit 3 ;;
+esac
+exit 0
+""")
+        self.command("omarchy-launch-floating-terminal-with-presentation",
+                     "#!/bin/sh\nprintf '%s\\n' \"$1\"\n")
+        self.broadcom = tmp / "sys" / "bus" / "pci" / "devices" / "0000:01:00.0"
+        self.broadcom.mkdir(parents=True)
+        (self.broadcom / "vendor").write_text("0x14e4\n")
+        (self.broadcom / "class").write_text("0x028000\n")
+        self.backend(None)
+        self.env = {k: v for k, v in os.environ.items()
+                    if k not in ("OMDROP_IMPLEMENTATION", "CORE_INSTALLED", "CORE_REPO", "RECEIVING")}
+        self.env.update(PATH=f"{self.bin}:{self.env['PATH']}",
+                        HOME=str(tmp),
+                        XDG_CONFIG_HOME=str(tmp / ".config"),
+                        XDG_CACHE_HOME=str(tmp / ".cache"),
+                        OMDROP_SYSFS=str(tmp / "sys"),
+                        OMDROP_CORE="/nonexistent",
+                        OMDROP_DISCOVERABLE=str(self.bin / "omdrop-discoverable"))
+
+    def command(self, name, body):
+        path = self.bin / name
+        path.write_text(body)
+        path.chmod(0o755)
+
+    def backend(self, name, hardware=True):
+        self.command("omdrop-discoverable", probe_helper(name, hardware))
+
+    def no_broadcom(self):
+        (self.broadcom / "vendor").write_text("0x8086\n")
+
+    def omdrop(self, *args):
+        return subprocess.run([OMDROP, *args], env=self.env, capture_output=True, text=True)
+
+    def doctor(self):
+        result = self.omdrop("doctor", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def install(self):
+        result = self.omdrop("install-core")
+        return result.returncode, result.stdout + result.stderr
+
+    # --- doctor ---------------------------------------------------------------
+
+    def test_core_is_offered_on_broadcom_and_never_blocks(self):
+        for backend in (None, "awdl"):
+            with self.subTest(backend=backend):
+                self.backend(backend)
+                doctor = self.doctor()
+                self.assertEqual([o["id"] for o in doctor["offers"]], ["core"], doctor)
+                self.assertIn("omdrop install-core", doctor["offers"][0]["say"])
+                self.assertNotIn("core", [m["id"] for m in doctor["missing"]])
+
+    def test_a_ready_plugin_stays_ready_with_core_on_offer(self):
+        self.backend("awdl")
+        doctor = self.doctor()
+        self.assertTrue(doctor["ready"], doctor)
+        self.assertTrue(doctor["offers"], doctor)
+
+    def test_core_is_not_offered_where_it_is_untested(self):
+        self.backend("owl")
+        self.assertEqual(self.doctor()["offers"], [])
+        self.backend("awdl", hardware=False)
+        self.assertEqual(self.doctor()["offers"], [])
+        self.backend(None)
+        self.no_broadcom()
+        self.assertEqual(self.doctor()["offers"], [])
+
+    def test_core_is_not_offered_to_someone_who_chose_python(self):
+        self.env["OMDROP_IMPLEMENTATION"] = "python"
+        self.assertEqual(self.doctor()["offers"], [])
+
+    def test_core_is_not_offered_once_installed(self):
+        self.env["CORE_INSTALLED"] = core_wanted()
+        self.assertEqual(self.doctor()["offers"], [])
+
+    def test_the_text_doctor_lists_the_offer_apart_from_blockers(self):
+        out = self.omdrop("doctor").stdout
+        self.assertRegex(out, r"(?s)\nOptional:\n  - omdrop-core.*omdrop install-core")
+
+    # --- install-core ---------------------------------------------------------
+
+    def test_without_a_repository_package_it_builds_this_plugins_core(self):
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        builds = re.findall(r"^.*\bmakepkg\b.*$", out, re.M)
+        self.assertEqual(len(builds), 1, out)
+        self.assertIn(f"--dir {ROOT / 'core'} ", builds[0])
+        self.assertIn("--install", builds[0])
+        # The build tree goes to the cache, never into the plugin's clone.
+        cache = Path(self.env["XDG_CACHE_HOME"]) / "omdrop" / "omdrop-core"
+        self.assertIn(f"BUILDDIR={cache}/build PKGDEST={cache} ", builds[0])
+        self.assertNotIn("pacman -S", out)
+
+    def test_a_repository_with_this_version_or_newer_is_used_instead(self):
+        for repo in (core_wanted(), "99.0.0-1"):
+            with self.subTest(repo=repo):
+                self.env["CORE_REPO"] = repo
+                code, out = self.install()
+                self.assertEqual(code, 0, out)
+                self.assertRegex(out, r"(?m)^sudo pacman -S --needed omdrop-core$")
+                self.assertNotIn("makepkg", out)
+
+    def test_an_older_repository_package_is_not_installed(self):
+        self.env["CORE_REPO"] = "0.0.1-1"
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("pacman -S", out)
+        self.assertIn("makepkg", out)
+
+    def test_a_current_install_has_nothing_to_do(self):
+        self.env["CORE_INSTALLED"] = core_wanted()
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertIn("Nothing to do", out)
+        self.assertNotIn("makepkg", out)
+
+    def test_an_older_install_is_updated(self):
+        self.env["CORE_INSTALLED"] = "0.0.1-1"
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertIn("makepkg", out)
+
+    def test_it_refuses_while_receiving(self):
+        self.env["RECEIVING"] = "1"
+        code, out = self.install()
+        self.assertNotEqual(code, 0)
+        self.assertIn("omdrop off", out)
+        self.assertNotIn("makepkg", out)
+
+    def test_it_refuses_where_core_is_untested(self):
+        for setup in ("owl", "awdl-no-hardware", "no-broadcom"):
+            with self.subTest(setup=setup):
+                if setup == "owl":
+                    self.backend("owl")
+                elif setup == "awdl-no-hardware":
+                    self.backend("awdl", hardware=False)
+                else:
+                    self.backend(None)
+                    self.no_broadcom()
+                code, out = self.install()
+                self.assertNotEqual(code, 0, out)
+                self.assertNotIn("makepkg", out)
+                self.assertNotIn("pacman -S", out)
+
+    # --- the hand-off to core -------------------------------------------------
+
+    def test_install_core_is_never_handed_to_an_installed_core(self):
+        # A core built before install-core existed answers it with its usage.
+        ran = Path(self.tmp.name) / "core-ran"
+        self.command("old-core", f"#!/bin/sh\ntouch {ran}\necho 'usage: omdrop ...' >&2\nexit 1\n")
+        self.env["OMDROP_CORE"] = str(self.bin / "old-core")
+        for implementation in (None, "rust"):
+            with self.subTest(implementation=implementation):
+                if implementation is None:
+                    self.env.pop("OMDROP_IMPLEMENTATION", None)
+                else:
+                    self.env["OMDROP_IMPLEMENTATION"] = implementation
+                code, out = self.install()
+                self.assertEqual(code, 0, out)
+                self.assertIn("makepkg", out)
+                self.assertFalse(ran.exists(), out)
+
+    def test_install_core_runs_here_with_rust_chosen_and_no_core(self):
+        self.env["OMDROP_IMPLEMENTATION"] = "rust"
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertIn("makepkg", out)
+
+    def test_install_core_still_refuses_an_unknown_implementation(self):
+        self.env["OMDROP_IMPLEMENTATION"] = "ruby"
+        code, out = self.install()
+        self.assertEqual(code, 2, out)
+        self.assertIn("OMDROP_IMPLEMENTATION must be python or rust", out)
+        self.assertNotIn("makepkg", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
