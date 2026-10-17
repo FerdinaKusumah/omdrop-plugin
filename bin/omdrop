@@ -64,10 +64,14 @@ version_ge() {
 }
 
 # omdrop-core (core/ in this repository) is the same command in Rust, built
-# and installed as its own package. When a core this plugin can use is
-# installed, every command goes to it: the panel, the PATH link and the
-# systemd units all run this file, and `exec -a "$0"` lets core find this
-# plugin through the path we were run as.
+# and installed as its own package. Its `omdrop` sits at
+# /usr/lib/omdrop-core/omdrop, off PATH, so this file is the one entry point:
+# the panel, the PATH link setup makes and the systemd units all run it, and it
+# applies CORE_MIN and OMDROP_IMPLEMENTATION before core runs. When a core
+# this plugin can use is installed, every command goes to it, and
+# `exec -a "$0"` lets core find this plugin through the path we were run as.
+# Core moves to /usr/bin/omdrop only once omdrop-owl runs on it and cores
+# older than this hand-off are gone.
 # OMDROP_IMPLEMENTATION picks the stack: python keeps this script and the
 # Python programs; rust requires a usable core; unset uses core when a usable
 # one is installed. Anything else is refused, so a typo cannot quietly pick a
@@ -75,8 +79,8 @@ version_ge() {
 # install-core never goes to core, whatever OMDROP_IMPLEMENTATION says: it is
 # how core gets installed or updated, and a core older than install-core would
 # answer it with its usage. With rust and no core it runs here for the same
-# reason. OMDROP_CORE moves the binary for tests. Never hand off to ourselves: a
-# /usr/bin/omdrop that is a link to this file would loop.
+# reason. OMDROP_CORE moves the binary for tests. Never hand off to ourselves:
+# an OMDROP_CORE that is a link to this file would loop.
 #
 # CORE_MIN is the oldest core this plugin hands off to. New features land
 # only in core/, so a plugin update can rely on a command or flag an older
@@ -94,7 +98,7 @@ CORE_TOO_OLD=
 core_version() {
   timeout -k 1 2 "$OMDROP_CORE" version </dev/null 2>/dev/null | sed -n 's/^omdrop-core \([^[:space:]]*\)$/\1/p' | head -n 1
 }
-OMDROP_CORE="${OMDROP_CORE:-/usr/bin/omdrop}"
+OMDROP_CORE="${OMDROP_CORE:-/usr/lib/omdrop-core/omdrop}"
 case "${OMDROP_IMPLEMENTATION:-}" in
   python) ;;
   rust|'')
@@ -1235,7 +1239,11 @@ core_supported() {
 #
 # A core older than CORE_MIN is installed but gets no commands, so say so,
 # and name what updates it: install-core for the omdrop-core package where it
-# offers one, otherwise the package /usr/bin/omdrop belongs to.
+# offers one, otherwise the package OMDROP_CORE belongs to.
+#
+# An omdrop-core package with no OMDROP_CORE is one from before core moved off
+# PATH (0.1.2 and older put it at /usr/bin/omdrop). It gets no commands either,
+# and install-core replaces it, so offer that as an update.
 core_offers() {
   [[ "${OMDROP_IMPLEMENTATION:-}" == python ]] && return 0
   if [[ -n "$CORE_TOO_OLD" ]]; then
@@ -1253,8 +1261,14 @@ core_offers() {
     printf 'core\t%s\n' "The installed omdrop-core ($CORE_TOO_OLD) is older than the $CORE_MIN this version of Omdrop needs, so Omdrop is running its Python version instead. $how"
     return 0
   fi
-  core_wanted >/dev/null && core_supported || return 0
-  pacman -Q "$CORE_PKG" >/dev/null 2>&1 && return 0
+  local have want
+  want=$(core_wanted) && core_supported || return 0
+  if have=$(pacman -Q "$CORE_PKG" 2>/dev/null); then
+    have=${have##* }
+    version_ge "$have" "$want" && return 0
+    printf 'core\t%s\n' "The installed omdrop-core ($have) is older than the $want this version of Omdrop needs, so Omdrop is running its Python version instead. Update it with: omdrop install-core"
+    return 0
+  fi
   printf 'core\t%s\n' "omdrop-core, the Rust version of Omdrop, is not installed. It is optional; install it with: omdrop install-core"
 }
 

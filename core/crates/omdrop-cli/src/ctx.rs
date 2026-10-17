@@ -2,9 +2,11 @@
 //!
 //! The bash was a file inside the plugin and found the plugin, its manifest
 //! and its skill relative to itself. This command is installed as
-//! `/usr/bin/omdrop`, outside any plugin, so the plugin is found the bash's
-//! way first (through the path we were invoked by, one symlink at a time),
-//! and otherwise where Omarchy installs plugins.
+//! `/usr/lib/omdrop-core/omdrop`, outside any plugin and off PATH: the
+//! plugin's own `bin/omdrop` is the one entry point and hands commands here.
+//! So the plugin is found the bash's way first (through the path we were
+//! invoked by, one symlink at a time), and otherwise where Omarchy installs
+//! plugins.
 
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
@@ -31,8 +33,8 @@ pub const DEFAULT_WINDOW: &str = "10m";
 pub const DEFAULT_SEND_WAIT: &str = "30";
 pub const PLUGIN_ID: &str = "netmojo.omdrop";
 
-/// Where the core helpers live when this command is `/usr/bin/omdrop`.
-pub const CORE_LIBEXEC: &str = "lib/omdrop-core";
+/// Where the package installs every core program, this command included.
+pub const CORE_LIBEXEC: &str = "/usr/lib/omdrop-core";
 /// The 0.9.x driver's helpers.
 pub const LEGACY_LIBEXEC: &str = "/usr/lib/omdrop";
 /// Present only when an omdrop-awdl with the backend contract is installed;
@@ -68,8 +70,6 @@ pub struct Ctx {
 #[derive(Clone)]
 pub struct Plugin {
     pub dir: PathBuf,
-    /// Found through the path we were run as: we ARE that plugin's command.
-    pub ours: bool,
 }
 
 static CTX: LazyLock<Ctx> = LazyLock::new(Ctx::from_env);
@@ -148,13 +148,14 @@ impl Ctx {
 
     /// How to run omdrop again -- for the systemd units, the notification,
     /// `send`'s automatic `on`, desktop entries and the PATH link: the
-    /// plugin's own `bin/omdrop` when that is how we were run, so the new
-    /// process finds the same plugin even outside the default directory;
-    /// otherwise ourselves.
+    /// plugin's own `bin/omdrop`, the one entry point, so the new process
+    /// gets the plugin's CORE_MIN and OMDROP_IMPLEMENTATION checks and finds
+    /// the same plugin even outside the default directory; without a plugin,
+    /// ourselves.
     pub fn command_path(&self) -> &Path {
         self.command.get_or_init(|| match self.plugin() {
-            Some(p) if p.ours => p.dir.join("bin/omdrop"),
-            _ => self.self_exe.clone(),
+            Some(p) => p.dir.join("bin/omdrop"),
+            None => self.self_exe.clone(),
         })
     }
 }
@@ -184,21 +185,12 @@ fn self_exe() -> PathBuf {
     }
 }
 
-/// Where a core helper sits relative to this executable: `<prefix>/lib/
-/// omdrop-core` when we are `<prefix>/bin/omdrop` (the package layout), then
-/// our own directory, which is where `cargo build --workspace` puts every
-/// binary of a development build.
+/// Where a core helper sits relative to this executable: beside it. The
+/// package installs every program in /usr/lib/omdrop-core, and
+/// `cargo build --workspace` puts every binary of a development build in one
+/// directory.
 pub fn sibling_dirs(exe: &Path) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(dir) = exe.parent() {
-        if dir.file_name().is_some_and(|n| n == "bin")
-            && let Some(prefix) = dir.parent()
-        {
-            dirs.push(prefix.join(CORE_LIBEXEC));
-        }
-        dirs.push(dir.to_path_buf());
-    }
-    dirs
+    exe.parent().map(Path::to_path_buf).into_iter().collect()
 }
 
 fn find_sibling(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
@@ -242,7 +234,7 @@ fn find_sender(legacy: bool, siblings: &[PathBuf], proj: &Path) -> PathBuf {
 /// helper bound to the polkit action org.omarchy.omdrop.radio; it needs the
 /// driver's backend hooks, so without them the 0.9.x helper still serves.
 fn find_discoverable(legacy: bool, proj: &Path) -> PathBuf {
-    let core = Path::new("/usr").join(CORE_LIBEXEC).join("omdrop-radio");
+    let core = Path::new(CORE_LIBEXEC).join("omdrop-radio");
     let found = env_nonempty("OMDROP_DISCOVERABLE")
         .map(PathBuf::from)
         .or_else(|| {
@@ -281,7 +273,7 @@ pub fn name_wait(raw: Option<&str>) -> u64 {
 /// files that shipped with it. Then where `omarchy plugin add` puts it.
 fn find_plugin(argv0: &OsString) -> Option<Plugin> {
     if let Some(dir) = plugin_from_invocation(argv0) {
-        return Some(Plugin { dir, ours: true });
+        return Some(Plugin { dir });
     }
     let mut candidates = Vec::new();
     if let Some(x) = env_nonempty("XDG_CONFIG_HOME") {
@@ -295,7 +287,7 @@ fn find_plugin(argv0: &OsString) -> Option<Plugin> {
     candidates
         .into_iter()
         .find(|d| d.join("manifest.json").is_file())
-        .map(|dir| Plugin { dir, ours: false })
+        .map(|dir| Plugin { dir })
 }
 
 fn plugin_from_invocation(argv0: &OsString) -> Option<PathBuf> {
@@ -382,18 +374,38 @@ mod tests {
     }
 
     #[test]
-    fn siblings_of_a_packaged_command_are_in_lib_omdrop_core() {
+    fn siblings_are_beside_the_command_in_the_package_and_a_build() {
         assert_eq!(
-            sibling_dirs(Path::new("/usr/bin/omdrop")),
-            vec![
-                PathBuf::from("/usr/lib/omdrop-core"),
-                PathBuf::from("/usr/bin")
-            ]
+            sibling_dirs(Path::new("/usr/lib/omdrop-core/omdrop")),
+            vec![PathBuf::from("/usr/lib/omdrop-core")]
         );
         assert_eq!(
             sibling_dirs(Path::new("/tmp/t/debug/omdrop")),
             vec![PathBuf::from("/tmp/t/debug")]
         );
+    }
+
+    #[test]
+    fn helpers_are_found_beside_a_command_in_a_lib_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("usr/lib/omdrop-core");
+        std::fs::create_dir_all(&lib).unwrap();
+        for prog in ["omdrop", "send-to-peer", "omdrop-receiver"] {
+            let p = lib.join(prog);
+            std::fs::write(&p, "#!/bin/sh\n").unwrap();
+            let exec = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+            std::fs::set_permissions(&p, exec).unwrap();
+        }
+        let siblings = sibling_dirs(&lib.join("omdrop"));
+        assert_eq!(
+            find_sibling(&siblings, "send-to-peer"),
+            Some(lib.join("send-to-peer"))
+        );
+        assert_eq!(
+            find_sibling(&siblings, "omdrop-receiver"),
+            Some(lib.join("omdrop-receiver"))
+        );
+        assert_eq!(find_sibling(&siblings, "omdrop-adv"), None);
     }
 
     #[test]

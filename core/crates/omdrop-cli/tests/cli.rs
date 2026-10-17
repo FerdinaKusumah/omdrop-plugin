@@ -145,7 +145,11 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(&self.omdrop);
+        self.command_as(&self.omdrop, args)
+    }
+
+    fn command_as(&self, program: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(program);
         cmd.args(args)
             .env_clear()
             .env(
@@ -617,6 +621,43 @@ fn a_plugin_outside_the_default_directory_is_found_again_by_what_omdrop_starts()
         f.omdrop.display()
     );
     assert!(ev.contains(&watch), "{ev}");
+}
+
+#[test]
+fn core_run_directly_still_starts_everything_through_the_plugins_command() {
+    // Core's own omdrop, run by its path rather than through the plugin's
+    // bin/omdrop: the units still go through the plugin, the one entry point.
+    let f = Fixture::new();
+    let plugins = f.root.join("home/.config/omarchy/plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::os::unix::fs::symlink(
+        f.root.join("plugins/netmojo.omdrop"),
+        plugins.join("netmojo.omdrop"),
+    )
+    .unwrap();
+    let file = f.root.join("photo.jpg");
+    std::fs::write(&file, "x").unwrap();
+    let sender = f.root.join("sender");
+    let out = f
+        .command_as(
+            Path::new(env!("CARGO_BIN_EXE_omdrop")),
+            &["send", "Studio Mac", file.to_str().unwrap()],
+        )
+        .env("OMDROP_SENDER", &sender)
+        .output()
+        .unwrap();
+    let ev = std::fs::read_to_string(&f.capture).unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Turning it on"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let watch = format!(
+        "--unit=omdrop-watch {} watch --window 10m",
+        plugins.join("netmojo.omdrop/bin/omdrop").display()
+    );
+    assert!(ev.contains(&watch), "{ev}");
+    assert!(!ev.contains(env!("CARGO_BIN_EXE_omdrop")), "{ev}");
 }
 
 /// `handle` with a uwsm-app that keeps what it was given on stdin, the way

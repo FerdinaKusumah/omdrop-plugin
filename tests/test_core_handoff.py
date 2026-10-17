@@ -38,7 +38,7 @@ class CoreHandoffTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.core = Path(self.tmp.name) / "omdrop-core"
-        # A stand-in for /usr/bin/omdrop: say its version as core does, then
+        # A stand-in for /usr/lib/omdrop-core/omdrop: say its version as core does, then
         # report how it was called. An empty CORE_VERSION says none, and
         # CORE_HANGS makes `version` never return.
         self.core.write_text('#!/bin/bash\n'

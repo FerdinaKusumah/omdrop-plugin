@@ -1015,7 +1015,13 @@ mod tests {
 
     #[test]
     fn packages_come_from_the_official_repositories_and_the_rule_comes_last() {
-        let script = build_script("/usr/bin/omdrop", true, true, true, true);
+        let script = build_script(
+            "/home/u/.config/omarchy/plugins/netmojo.omdrop/bin/omdrop",
+            true,
+            true,
+            true,
+            true,
+        );
         assert!(
             script
                 .lines()

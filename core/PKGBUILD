@@ -74,14 +74,17 @@ check() {
 package() {
   local bin="${srcdir}/target/release"
 
-  install -Dm755 "${bin}/omdrop" "${pkgdir}/usr/bin/omdrop"
-
-  # Everything else beside the root helper, in a root-owned directory: the
-  # polkit action binds to one exact path, and the helper finds the
-  # advertisers beside itself. A helper anywhere the user can write would
-  # hand that user root.
+  # Every program in a root-owned directory: the polkit action binds to one
+  # exact path, and the helper finds the advertisers beside itself. A helper
+  # anywhere the user can write would hand that user root.
+  #
+  # `omdrop` too, off PATH: the plugin's own `omdrop` is the one entry point,
+  # so it can apply CORE_MIN and OMDROP_IMPLEMENTATION before core runs. A
+  # core at /usr/bin/omdrop would come before the plugin's ~/.local/bin/omdrop
+  # and skip both. It moves to /usr/bin/omdrop only once omdrop-owl runs on
+  # core and cores older than the plugin's hand-off are gone.
   local lib="${pkgdir}/usr/lib/omdrop-core" prog
-  for prog in omdrop-radio omdrop-receiver omdrop-adv airdrop-send send-to-peer; do
+  for prog in omdrop omdrop-radio omdrop-receiver omdrop-adv airdrop-send send-to-peer; do
     install -Dm755 "${bin}/${prog}" "${lib}/${prog}"
   done
 

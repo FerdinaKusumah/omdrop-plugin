@@ -43,7 +43,7 @@ class InstallCoreTests(unittest.TestCase):
         self.bin = tmp / "bin"
         self.bin.mkdir()
         # pacman answers from CORE_INSTALLED (pacman -Q), CORE_REPO (pacman
-        # -Si) and CORE_OWNER (pacman -Qqo, the package /usr/bin/omdrop is
+        # -Si) and CORE_OWNER (pacman -Qqo, the package OMDROP_CORE is
         # from); unset means absent.
         self.command("pacman", """#!/bin/sh
 if [ "$1" = -Qqo ]; then [ -n "$CORE_OWNER" ] || exit 1; echo "$CORE_OWNER"; exit 0; fi
@@ -174,6 +174,30 @@ exit 0
                 say = self.doctor()["offers"][0]["say"]
                 self.assertTrue(say.endswith(update), say)
                 self.assertNotIn("install-core", say)
+
+    def test_a_core_package_from_before_the_move_off_path_is_offered_as_an_update(self):
+        # omdrop-core 0.1.2 and older installed /usr/bin/omdrop and nothing at
+        # OMDROP_CORE: no hand-off, and install-core replaces the package.
+        self.backend("awdl")
+        self.env["CORE_INSTALLED"] = "0.1.1-1"
+        doctor = self.doctor()
+        self.assertTrue(doctor["ready"], doctor)
+        self.assertEqual([o["id"] for o in doctor["offers"]], ["core"], doctor)
+        say = doctor["offers"][0]["say"]
+        self.assertIn("The installed omdrop-core (0.1.1-1) is older than the", say)
+        self.assertTrue(say.endswith("Update it with: omdrop install-core"), say)
+        self.assertNotIn("not installed", say)
+
+    def test_core_is_installed_off_path_where_the_plugin_looks(self):
+        # The plugin's omdrop is the one command on PATH, so it decides
+        # whether core runs. The package puts core's omdrop beside its other
+        # programs, where the plugin looks, and nothing in /usr/bin.
+        self.assertRegex(OMDROP.read_text(),
+                         r'(?m)^OMDROP_CORE="\$\{OMDROP_CORE:-/usr/lib/omdrop-core/omdrop\}"$')
+        pkgbuild = (ROOT / "core" / "PKGBUILD").read_text()
+        self.assertRegex(pkgbuild, r'(?m)^  local lib="\$\{pkgdir\}/usr/lib/omdrop-core" prog$')
+        self.assertRegex(pkgbuild, r'(?m)^  for prog in omdrop .*; do$')
+        self.assertNotIn("${pkgdir}/usr/bin", pkgbuild)
 
     # --- install-core ---------------------------------------------------------
 
