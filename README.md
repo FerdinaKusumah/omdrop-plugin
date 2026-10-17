@@ -52,11 +52,13 @@ It first puts the plugin's `omdrop` command at `~/.local/bin/omdrop` if it isn't
 ## Upgrade
 
 ```bash
-omarchy plugin update netmojo.omdrop   # fetch the latest release
-omarchy-restart-shell                  # the bar loads the new panel only after a shell restart
-omdrop install-core                    # if your radio backend supports omdrop-core, install or update it
-omdrop install-driver                  # on a Mac, rebuild the driver if the new release needs a newer one
+omarchy plugin update netmojo.omdrop --yes   # fetch the latest release
+omarchy-restart-shell                        # the bar loads the new panel only after a shell restart
+omdrop install-core                          # if your radio backend supports omdrop-core, install or update it
+omdrop install-driver                        # on a Mac, rebuild the driver if the new release needs a newer one
 ```
+
+Without `--yes`, `omarchy plugin update` first shows every line that changed, in a pager, before it asks whether to update; for a large release that is thousands of lines. Press `q` to leave the pager and reach the question. To read only which files changed, run `git -C ~/.config/omarchy/plugins/netmojo.omdrop fetch origin` and then `git -C ~/.config/omarchy/plugins/netmojo.omdrop diff --stat HEAD FETCH_HEAD`.
 
 Run `omdrop install-core` first, so that `omdrop install-driver` runs as omdrop-core, which pins the driver and checks it. `omdrop install-driver` and `omdrop install-core` do nothing when everything they install is already current. `omdrop doctor` reports an omdrop-core older than the release needs; only omdrop-core's `omdrop doctor` also reports a driver older than the release needs. On a PC, update the radio backend through its own package: `omdrop install-driver` leaves it alone. If Omdrop is on while you upgrade, turn it off and on again: the receiver keeps running the old version until it restarts. `omdrop install-core` asks you to turn Omdrop off first.
 
