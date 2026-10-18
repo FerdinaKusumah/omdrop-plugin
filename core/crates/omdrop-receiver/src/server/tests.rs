@@ -1133,8 +1133,15 @@ fn leave_mid_request(
     sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut answer = Vec::new();
     // The receiver's clean close ends this with Ok, a reset with an error;
-    // either way, only what arrived before it matters.
-    let _ = c.read_to_end(&mut answer);
+    // either way, only what arrived before it matters. A timeout means the
+    // receiver kept the connection open, which a departed sender must not
+    // cost it.
+    if let Err(e) = c.read_to_end(&mut answer) {
+        assert!(
+            !omdrop_proto::http::is_timeout(&e),
+            "the receiver kept the connection open: {e}"
+        );
+    }
     answer
 }
 
