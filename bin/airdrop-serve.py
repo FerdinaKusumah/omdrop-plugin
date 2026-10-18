@@ -803,17 +803,20 @@ class Handler(BaseHTTPRequestHandler):
         # Its first byte ends it, so a request line, headers or body that stall
         # get the ordinary idle limit. peek() blocks for that byte, counts any
         # already buffered, and consumes nothing.
-        if self.awaiting_upload:
-            try:
-                self.rfile.peek(1)
-            except TimeoutError:
-                logging.warning('no Upload within %d s of an accepted Ask; closing the connection',
-                                UPLOAD_WAIT_SECONDS)
-                self.close_connection = True
-                return
-            self.awaiting_upload = False
-            self.request.settimeout(READ_IDLE_TIMEOUT_SECONDS)
-        super().handle_one_request()
+        try:
+            if self.awaiting_upload:
+                try:
+                    self.rfile.peek(1)
+                except TimeoutError:
+                    logging.warning('no Upload within %d s of an accepted Ask; closing the connection',
+                                    UPLOAD_WAIT_SECONDS)
+                    self.close_connection = True
+                    return
+                self.awaiting_upload = False
+                self.request.settimeout(READ_IDLE_TIMEOUT_SECONDS)
+            super().handle_one_request()
+        except (ConnectionError, ssl.SSLError) as e:
+            self.peer_disconnected(str(e))
 
     def handle_expect_100(self):
         # BaseHTTPRequestHandler would acknowledge an upload before its framing
@@ -822,6 +825,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/Upload':
             return True
         return super().handle_expect_100()
+
+    def peer_disconnected(self, reason):
+        self.close_connection = True
+        logging.info('%s peer disconnected: %s',
+                     getattr(self, 'path', 'request'), reason)
 
     def reject(self, status, reason):
         logging.warning('%s rejected: %s', self.path, reason)
@@ -1063,6 +1071,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         except RequestBodyError as e:
             self.reject(e.status, str(e))
+            return
+        except (ConnectionError, ssl.SSLError) as e:
+            # Socket errors are OSErrors too. They do not mean storage failed,
+            # and replying 507 on the dead socket just raises BrokenPipeError.
+            # The temporary file and upload slot are released by with/finally.
+            self.peer_disconnected(
+                f'upload {tid}: {e}; {deadline.transferred} HTTP body/framing '
+                f'bytes read in {time.monotonic() - deadline.started:.1f} s')
             return
         except OSError as e:
             self.reject(507, f'storage failed: {e}')
