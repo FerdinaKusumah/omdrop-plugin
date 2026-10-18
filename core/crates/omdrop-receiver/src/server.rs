@@ -7,6 +7,8 @@
 //!   TLS connection, and a swapped-out reader once made the keep-alive loop see
 //!   EOF.
 //! - `/Upload` arrives as `application/x-dvzip` and is decoded while it streams.
+//!   iOS 16 labels the same compressed archive `application/x-cpio`
+//!   (plugin #40); that body is decoded alike.
 //!
 //! Anything else POSTed is answered 400, GET and HEAD a bare 200, and every
 //! other method 501. One thread per connection, because sharingd opens several
@@ -1199,7 +1201,7 @@ impl Conn<'_> {
             .unwrap_or_default()
             .trim()
             .to_lowercase();
-        if ctype != "application/x-dvzip" {
+        if ctype != "application/x-dvzip" && ctype != "application/x-cpio" {
             return self.reject(
                 io,
                 req,

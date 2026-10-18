@@ -439,13 +439,46 @@ fn ask_then_upload_on_one_connection_stores_the_files() {
 }
 
 #[test]
+fn an_x_cpio_upload_from_older_ios_is_stored() {
+    // iOS 16 labels the same compressed CPIO archive `application/x-cpio`;
+    // a 415 made the iPhone report every transfer as failed (plugin #40).
+    let fx = start(false, |_| {});
+    for (name, body) in [
+        ("dvzip.jpg", dvzip(&[("dvzip.jpg", b"jpeg bytes")])),
+        ("gzip.jpg", gzip(&cpio_of(&[("gzip.jpg", b"jpeg bytes")]))),
+    ] {
+        let mut c = connect(&fx, false);
+        let (status, _) = post(&mut c, "/Ask", &ask_body(None));
+        assert_eq!(status, 200, "{name}");
+        request(
+            &mut c,
+            "/Upload",
+            &[
+                ("Content-Type", "application/x-cpio"),
+                ("TransferID", name),
+                ("Expect", "100-continue"),
+            ],
+            &body,
+            true,
+        );
+        assert_eq!(response(&mut c).0, 200, "{name}");
+        assert_eq!(
+            std::fs::read(fx.dest().join(name)).unwrap(),
+            b"jpeg bytes",
+            "{name}"
+        );
+    }
+    assert_eq!(fx.files(), ["dvzip.jpg", "gzip.jpg"]);
+}
+
+#[test]
 fn hostile_uploads_are_refused_and_leave_nothing() {
     let fx = start(false, |_| {});
     let mut c = connect(&fx, false);
     request(
         &mut c,
         "/Upload",
-        &[("Content-Type", "application/x-cpio")],
+        &[("Content-Type", "text/plain")],
         b"x",
         false,
     );
