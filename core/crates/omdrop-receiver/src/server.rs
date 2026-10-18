@@ -235,6 +235,13 @@ fn host(addr: &SocketAddr) -> String {
     }
 }
 
+/// A sender that left mid-request: logged, as the Python receiver logs it
+/// (plugin #39), and the connection closed without an answer it can't read.
+fn peer_disconnected(req: &Request, reason: &str) -> Flow {
+    info!("{} peer disconnected: {reason}", req.path);
+    Flow::Close
+}
+
 fn set_reset_on_close(sock: &TcpStream) {
     use std::os::fd::AsRawFd;
     let linger = libc::linger {
@@ -983,6 +990,7 @@ impl Conn<'_> {
             Err(BodyError::Timeout(_)) => {
                 return self.reject(io, req, 408, "request body read timed out");
             }
+            Err(BodyError::ConnectionLost(m)) => return Ok(peer_disconnected(req, &m)),
             Err(e) => return self.reject(io, req, e.status(), &e.to_string()),
         };
         debug!("buffered bounded {}-byte body for {}", body.len(), req.path);
@@ -1337,6 +1345,17 @@ impl Conn<'_> {
                         ),
                     )
                 }
+                // The sender left mid-upload: no answer can reach it, and it is
+                // not a storage failure. The partial files and the upload slot
+                // were released when extract and the slot guard returned.
+                Ok(BodyError::ConnectionLost(m)) => Ok(peer_disconnected(
+                    req,
+                    &format!(
+                        "upload {tid}: {m}; {} HTTP body/framing bytes read in {:.1} s",
+                        deadline.transferred(),
+                        deadline.elapsed().as_secs_f64()
+                    ),
+                )),
                 Ok(e) => self.reject(io, req, e.status(), &e.to_string()),
                 Err(e) => self.reject(io, req, 507, &format!("storage failed: {e}")),
             },
