@@ -390,9 +390,7 @@ class InterruptedUploadTests(ReceiverFixture):
         self.assertEqual(response.readline(), b"\r\n")
         response.close()
         conn.sock.sendall(partial)
-        # A sender leaving AWDL can reset the connection between chunks.
-        # Give the receiver time to consume the preceding complete chunk.
-        time.sleep(0.1)
+        # A sender leaving AWDL can reset before every byte is consumed.
         conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
                              struct.pack("ii", 1, 0))
         conn.close()
@@ -410,8 +408,9 @@ class InterruptedUploadTests(ReceiverFixture):
         return log
 
     def assert_upload_progress(self, log, count, eof_reason):
-        if "HTTP body/framing bytes read" in log:
-            self.assertIn(f"{count} HTTP body/framing bytes read", log)
+        progress = re.search(r"(\d+) HTTP body/framing bytes read", log)
+        if progress:
+            self.assertLessEqual(int(progress.group(1)), count)
         else:
             # Some Python/OpenSSL versions expose the reset as EOF, then a
             # broken pipe on the 400 reply, rather than a read exception.
